@@ -27,6 +27,13 @@ function App() {
       <footer className="footer">
         <p>© 2026 CloudMatrix | Team Project</p>
       </footer>
+    <div style={{ padding: "20px" }}>
+      <h1>CloudMatrix - Divide & Conquer</h1>
+
+      <TaskForm addTask={addTask} />
+      <SortButton />
+      <TaskList tasks={tasks} />
+    </div>
     </div>
   );
 }
