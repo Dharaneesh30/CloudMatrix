@@ -33,4 +33,8 @@ class Server:
         )
 
     def assign_task(self, task):
+<<<<<<< HEAD
         self.tasks.append(task)
+=======
+        self.tasks.append(task)
+>>>>>>> 6d3664831cfac91317b254bbdf57bfea293515ec

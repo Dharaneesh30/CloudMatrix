@@ -1,38 +1,43 @@
-import TaskForm from "./components/TaskForm"
-import TaskList from "./components/TaskList"
-import SortButton from "./components/SortButton"
+import {BrowserRouter,Routes,Route,Link} from "react-router-dom"
+
+import Dashboard from "./pages/Dashboard"
+import TaskSorting from "./pages/TaskSorting"
+import ServerAllocation from "./pages/ServerAllocation"
+
 import "./App.css"
 
-function App() {
+function App(){
 
-  return (
+return(
 
-    <div className="app-container">
+<BrowserRouter>
 
-      {/* HEADER */}
-      <header className="header">
-        <h1>CloudMatrix</h1>
-        <p>AI-Based Cloud Resource Allocation And Load Balancing System</p>
-      </header>
+<header className="header">
 
-      {/* MAIN CONTENT */}
-      <main className="main-content">
+<h1>CloudMatrix</h1>
 
-        <h2>Divide & Conquer - Task Priority Sorting</h2>
+<nav className="nav">
 
-        <TaskForm />
-        <SortButton />
-        <TaskList />
+<Link to="/">Upload Dataset</Link>
+<Link to="/task-sorting">Task Sorting</Link>
+<Link to="/server-allocation">Server Allocation</Link>
 
-      </main>
+</nav>
 
-      {/* FOOTER */}
-      <footer className="footer">
-        © 2026 CloudMatrix | Team Project
-      </footer>
+</header>
 
-    </div>
-  )
+<Routes>
+
+<Route path="/" element={<Dashboard/>}/>
+<Route path="/task-sorting" element={<TaskSorting/>}/>
+<Route path="/server-allocation" element={<ServerAllocation/>}/>
+
+</Routes>
+
+</BrowserRouter>
+
+)
+
 }
 
 export default App
