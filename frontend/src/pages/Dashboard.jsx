@@ -53,24 +53,23 @@ export default function Dashboard() {
   return (
     <div className="page">
       <h2>Upload Cloud Task Dataset</h2>
+      <p className="meta">Drop in your CSV file to start task sorting and allocation analysis.</p>
 
-      <input
-        type="file"
-        accept=".csv"
-        onChange={(e) => setFile(e.target.files?.[0] || null)}
-        disabled={loading}
-      />
+      <div className="panel-row">
+        <input
+          type="file"
+          accept=".csv"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+          disabled={loading}
+        />
 
-      <button
-        onClick={handleUpload}
-        disabled={loading || !file}
-        style={{ marginLeft: "1rem" }}
-      >
-        {loading ? "Uploading..." : "Upload Dataset"}
-      </button>
+        <button onClick={handleUpload} disabled={loading || !file}>
+          {loading ? "Uploading..." : "Upload Dataset"}
+        </button>
+      </div>
 
       {message && (
-        <p style={{ marginTop: "1rem", color: message.includes("success") ? "green" : "red" }}>
+        <p className={`status ${message.toLowerCase().includes("success") ? "success" : "error"}`}>
           {message}
         </p>
       )}

@@ -1,9 +1,21 @@
-from flask import request, jsonify
-import pandas as pd
+from flask import Blueprint, request, jsonify
 import os
+import sys
+from pathlib import Path
 
-from app import app
-from core.allocation import greedy_allocate
+import pandas as pd
+
+try:
+    from ..core.allocation import greedy_allocate
+except ImportError:
+    backend_root = Path(__file__).resolve().parents[1]
+    backend_root_str = str(backend_root)
+    if backend_root_str not in sys.path:
+        sys.path.append(backend_root_str)
+    from core.allocation import greedy_allocate
+
+
+api_bp = Blueprint("api", __name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.normpath(os.path.join(BASE_DIR, "..", "data"))
@@ -12,7 +24,7 @@ DATA_PATH = os.path.join(DATA_FOLDER, "tasks.csv")
 os.makedirs(DATA_FOLDER, exist_ok=True)
 
 
-@app.route("/upload-dataset", methods=["POST"])
+@api_bp.route("/upload-dataset", methods=["POST"])
 def upload_dataset():
     if "file" not in request.files:
         return jsonify({"error": "No file part"}), 400
@@ -24,22 +36,25 @@ def upload_dataset():
     try:
         file.save(DATA_PATH)
         file_size = os.path.getsize(DATA_PATH)
-        return jsonify({
-            "message": "File saved successfully",
-            "saved_to": DATA_PATH,
-            "size_bytes": file_size
-        })
+        return jsonify(
+            {
+                "message": "File saved successfully",
+                "saved_to": DATA_PATH,
+                "size_bytes": file_size,
+            }
+        )
     except PermissionError:
-        return jsonify({"error": "Permission denied – check folder permissions"}), 500
+        return jsonify({"error": "Permission denied - check folder permissions"}), 500
     except Exception as e:
         return jsonify({"error": f"Save failed: {str(e)}"}), 500
 
 
-@app.route("/health", methods=["GET"])
+@api_bp.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "message": "Backend is running"}), 200
 
-@app.route("/tasks", methods=["GET"])
+
+@api_bp.route("/tasks", methods=["GET"])
 def get_tasks():
     if not os.path.exists(DATA_PATH):
         return jsonify({"error": "No dataset found. Please upload a CSV first."}), 404
@@ -50,7 +65,8 @@ def get_tasks():
     except Exception as e:
         return jsonify({"error": f"Error reading CSV: {str(e)}"}), 500
 
-@app.route("/add-task", methods=["POST"])
+
+@api_bp.route("/add-task", methods=["POST"])
 def add_task():
     if not os.path.exists(DATA_PATH):
         return jsonify({"error": "No dataset found. Upload CSV first."}), 404
@@ -82,35 +98,7 @@ def add_task():
         return jsonify({"error": f"Failed to add task: {str(e)}"}), 500
 
 
-def merge_sort(arr):
-    if len(arr) <= 1:
-        return arr
-
-    mid = len(arr) // 2
-    left = merge_sort(arr[:mid])
-    right = merge_sort(arr[mid:])
-
-    return merge(left, right)
-
-
-def merge(left, right):
-    result = []
-    i = j = 0
-
-    while i < len(left) and j < len(right):
-        if left[i]["priority"] < right[j]["priority"]:
-            result.append(left[i])
-            i += 1
-        else:
-            result.append(right[j])
-            j += 1
-
-    result.extend(left[i:])
-    result.extend(right[j:])
-    return result
-
-
-@app.route("/sort-tasks", methods=["GET"])
+@api_bp.route("/sort-tasks", methods=["GET"])
 def sort_tasks():
     if not os.path.exists(DATA_PATH):
         return jsonify({"error": "No dataset found"}), 404
@@ -129,16 +117,19 @@ def sort_tasks():
         end_index = start_index + page_size
         page_df = df_sorted.iloc[start_index:end_index]
 
-        return jsonify({
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "tasks": page_df.to_dict(orient="records"),
-        })
+        return jsonify(
+            {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "tasks": page_df.to_dict(orient="records"),
+            }
+        )
     except Exception as e:
         return jsonify({"error": f"Error sorting tasks: {str(e)}"}), 500
 
-@app.route("/allocate-servers", methods=["GET"])
+
+@api_bp.route("/allocate-servers", methods=["GET"])
 def allocate_servers():
     if not os.path.exists(DATA_PATH):
         return jsonify({"error": "No dataset found"}), 404
@@ -152,22 +143,22 @@ def allocate_servers():
         df = pd.read_csv(DATA_PATH)
         total = len(df)
 
-        # Greedy scheduling by descending priority
         result = greedy_allocate(df.to_dict(orient="records"))
         allocations = result["allocations"]
         unassigned = result["unassigned"]
 
-        # Pagination on allocations list
         start_index = (page - 1) * page_size
         end_index = start_index + page_size
         paged_allocations = allocations[start_index:end_index]
 
-        return jsonify({
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "allocations": paged_allocations,
-            "unassigned": unassigned,
-        })
+        return jsonify(
+            {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "allocations": paged_allocations,
+                "unassigned": unassigned,
+            }
+        )
     except Exception as e:
         return jsonify({"error": f"Error during allocation: {str(e)}"}), 500
