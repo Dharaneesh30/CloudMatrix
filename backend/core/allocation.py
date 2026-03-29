@@ -1,47 +1,23 @@
-def greedy_allocate(tasks, servers=None):
-    """Allocate tasks to servers using greedy first-fit by descending priority."""
+from __future__ import annotations
 
+from typing import Dict, List
+
+try:
+    from .greedy_allocator import allocate_greedy
+except ImportError:
+    from greedy_allocator import allocate_greedy
+
+
+def greedy_allocate(tasks: List[Dict], servers=None):
     if servers is None:
         servers = [
-            {"server_id": "S1", "cpu": 1.0, "memory": 1.0},
-            {"server_id": "S2", "cpu": 1.0, "memory": 1.0},
-            {"server_id": "S3", "cpu": 1.0, "memory": 1.0}
+            {"server_id": "S1", "cpu_capacity": 1.0, "memory_capacity": 1.0, "cpu_available": 1.0, "memory_available": 1.0},
+            {"server_id": "S2", "cpu_capacity": 1.0, "memory_capacity": 1.0, "cpu_available": 1.0, "memory_available": 1.0},
+            {"server_id": "S3", "cpu_capacity": 1.0, "memory_capacity": 1.0, "cpu_available": 1.0, "memory_available": 1.0},
         ]
-
-    ordered_tasks = sorted(tasks, key=lambda t: float(t.get("priority", 0)), reverse=True)
-
-    allocations = []
-    unassigned = []
-
-    for task in ordered_tasks:
-        cpu_req = float(task.get("cpu_request", 1))
-        mem_req = float(task.get("memory_request", 1))
-
-        placed = False
-        for server in servers:
-            if server["cpu"] >= cpu_req and server["memory"] >= mem_req:
-                allocations.append({
-                    "task_id": task.get("id"),
-                    "server": server["server_id"],
-                    "priority": float(task.get("priority", 0)),
-                    "cpu_request": cpu_req,
-                    "memory_request": mem_req
-                })
-                server["cpu"] -= cpu_req
-                server["memory"] -= mem_req
-                placed = True
-                break
-
-        if not placed:
-            unassigned.append({
-                "task_id": task.get("id"),
-                "priority": float(task.get("priority", 0)),
-                "cpu_request": cpu_req,
-                "memory_request": mem_req
-            })
-
+    allocations, unassigned, updated_servers = allocate_greedy(tasks, servers)
     return {
         "allocations": allocations,
         "unassigned": unassigned,
-        "servers": servers
+        "servers": updated_servers,
     }

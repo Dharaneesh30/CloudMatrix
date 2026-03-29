@@ -7,7 +7,6 @@ class Task:
         self.deadline = deadline
         self.status = status
 
-
 class Server:
     def __init__(self, server_id, cpu_capacity, memory_capacity, tasks=None):
         self.server_id = server_id
@@ -38,4 +37,12 @@ class Server:
             self.tasks.append(task)
             task.status = "assigned"
             return True
+        return False
+    
+    def remove_task(self, task_id):
+        for task in self.tasks:
+            if task.task_id == task_id:
+                self.tasks.remove(task)
+                task.status = "removed"
+                return True
         return False
