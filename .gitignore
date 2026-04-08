@@ -1,0 +1,12 @@
+
+# runtime data
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+backend/data/uploads/
+backend/venv/
+.venv/
+**/__pycache__/
+*.pyc
+backend_run_out.log
+backend_run_err.log

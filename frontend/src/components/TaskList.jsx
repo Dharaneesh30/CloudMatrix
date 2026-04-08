@@ -1,24 +1,24 @@
-function TaskList({ tasks }) {
+export default function TaskList({ tasks = [] }) {
+
+  if (tasks.length === 0) {
+    return <p>No tasks available</p>
+  }
+
   return (
-    <div className="task-box">
+
+    <div>
+
       <h3>Task List</h3>
 
-      {tasks.length === 0 ? (
-        <p className="empty-text">No tasks added yet</p>
-      ) : (
-        <ul className="task-list">
-          {tasks.map((task, index) => (
-            <li key={index} className="task-item">
-              <span className="task-id">{task.task_id}</span>
-              <span className="task-priority">
-                Priority: {task.priority}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
+      <ul>
+        {tasks.map((task, index) => (
+          <li key={index}>
+            Task {task.id} | Priority {task.priority}
+          </li>
+        ))}
+      </ul>
 
-export default TaskList;
+    </div>
+
+  )
+}

@@ -1,100 +1,289 @@
-body {
-  margin: 0;
-  font-family: Arial, sans-serif;
-  background-color: #f4f6f8;
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap");
+
+:root {
+  --bg: #f6f3ef;
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-strong: #ffffff;
+  --text: #1e1a16;
+  --muted: #675f58;
+  --accent: #d95f3f;
+  --accent-deep: #b84b2f;
+  --line: rgba(30, 26, 22, 0.12);
+  --ok: #1f8f5f;
+  --danger: #bb2f39;
+  --shadow: 0 18px 45px rgba(74, 47, 30, 0.14);
 }
 
-.app-container {
-  display: flex;
-  flex-direction: column;
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  font-family: "Outfit", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 8% 15%, #ffe8ce 0, rgba(255, 232, 206, 0) 40%),
+    radial-gradient(circle at 92% 84%, #fadac7 0, rgba(250, 218, 199, 0) 42%),
+    linear-gradient(155deg, #f4f0ea 0%, #f6f3ef 100%);
+}
+
+#root {
   min-height: 100vh;
 }
 
+.app-shell {
+  position: relative;
+  min-height: 100vh;
+  padding: 2rem 1.1rem 2.4rem;
+  overflow-x: hidden;
+}
+
+.bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(10px);
+  opacity: 0.46;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.bg-orb-1 {
+  width: 320px;
+  height: 320px;
+  right: -120px;
+  top: -80px;
+  background: radial-gradient(circle, #f7b18f 0%, #f39a73 65%, transparent 75%);
+}
+
+.bg-orb-2 {
+  width: 280px;
+  height: 280px;
+  left: -130px;
+  bottom: 10%;
+  background: radial-gradient(circle, #e6c09e 0%, #d79b63 62%, transparent 75%);
+}
+
+.header,
+.content {
+  position: relative;
+  z-index: 1;
+}
+
 .header {
-  background-color: #1e293b;
-  color: white;
-  padding: 20px;
-  text-align: center;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.2rem;
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  animation: rise 420ms ease-out both;
 }
 
-.header p {
-  margin: 5px 0 0;
-  font-size: 14px;
-  opacity: 0.8;
+.brand-kicker {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  font-size: 0.72rem;
 }
 
-.main-content {
-  flex: 1;
-  padding: 30px;
-  max-width: 600px;
-  margin: auto;
+.header h1 {
+  margin-top: 0.18rem;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(1.45rem, 2.5vw, 2.2rem);
+  letter-spacing: -0.02em;
 }
 
-.footer {
-  background-color: #1e293b;
-  color: white;
-  text-align: center;
-  padding: 10px;
-  font-size: 13px;
+.nav {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.nav a {
+  text-decoration: none;
+  color: var(--text);
+  font-weight: 600;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.52rem 0.92rem;
+  background: rgba(255, 255, 255, 0.65);
+  transition: all 0.2s ease;
+}
+
+.nav a:hover {
+  transform: translateY(-1px);
+  border-color: rgba(30, 26, 22, 0.28);
+}
+
+.nav a.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), #f07d56);
+  border-color: transparent;
+}
+
+.content {
+  max-width: 1100px;
+  margin: 1rem auto 0;
+}
+
+.page {
+  border-radius: 20px;
+  background: var(--surface-strong);
+  box-shadow: var(--shadow);
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  padding: clamp(1rem, 2vw, 1.6rem);
+  animation: rise 520ms ease-out both;
+}
+
+.page h2 {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(1.2rem, 2.1vw, 1.65rem);
+  margin-bottom: 0.95rem;
+}
+
+.panel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.66rem;
+  margin-bottom: 0.9rem;
+}
+
+input,
+button,
+select {
+  font: inherit;
+}
+
+input[type="file"] {
+  padding: 0.55rem;
+  border-radius: 10px;
+  border: 1px dashed var(--line);
+  background: #f8f5f2;
 }
 
 button {
-  padding: 8px 15px;
-  margin-top: 10px;
-  background-color: #2563eb;
-  color: white;
-  border: none;
+  border: 0;
+  border-radius: 10px;
+  padding: 0.56rem 1rem;
+  color: #fff;
+  font-weight: 600;
   cursor: pointer;
-  border-radius: 4px;
+  background: linear-gradient(135deg, var(--accent), #f17f59);
+  box-shadow: 0 8px 18px rgba(217, 95, 63, 0.28);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
-button:hover {
-  background-color: #1d4ed8;
+button:hover:enabled {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(217, 95, 63, 0.34);
 }
 
-input {
-  margin-right: 10px;
-  padding: 6px;
-  margin-bottom: 10px;
+button:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
-/* Task Box */
-
-.task-box {
-  background-color: white;
-  padding: 20px;
-  margin-top: 20px;
-  border-radius: 8px;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
-}
-
-.task-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.task-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 10px 0;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.task-item:last-child {
-  border-bottom: none;
-}
-
-.task-id {
+.status {
+  margin-top: 0.65rem;
   font-weight: 600;
 }
 
-.task-priority {
-  color: #2563eb;
-  font-weight: 500;
+.status.success {
+  color: var(--ok);
 }
 
-.empty-text {
-  color: #6b7280;
-  font-style: italic;
+.status.error {
+  color: var(--danger);
+}
+
+.meta {
+  margin-bottom: 0.8rem;
+  color: var(--muted);
+}
+
+.table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.74rem 0.8rem;
+  border-bottom: 1px solid rgba(30, 26, 22, 0.08);
+  white-space: nowrap;
+}
+
+th {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 0.84rem;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  background: #f7f2ed;
+  position: sticky;
+  top: 0;
+}
+
+tr:hover td {
+  background: #fff9f5;
+}
+
+.alloc-list {
+  list-style: none;
+  margin-top: 0.8rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.alloc-list li {
+  background: #f8f4ef;
+  border: 1px solid rgba(30, 26, 22, 0.1);
+  border-radius: 12px;
+  padding: 0.65rem 0.8rem;
+}
+
+@media (max-width: 700px) {
+  .header {
+    padding: 1rem;
+  }
+
+  .nav a {
+    padding: 0.48rem 0.8rem;
+    font-size: 0.92rem;
+  }
+
+  .page {
+    padding: 0.95rem;
+  }
+
+  .panel-row {
+    gap: 0.5rem;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

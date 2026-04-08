@@ -1,5 +1,19 @@
-function SortButton() {
-  return <button>Sort Tasks (Divide & Conquer)</button>;
+export default function SortButton({setTasks}){
+
+const sortTasks = async () => {
+
+const res = await fetch("http://localhost:5000/sort_tasks")
+
+const data = await res.json()
+
+setTasks(data)
+
 }
 
-export default SortButton;
+return(
+<button onClick={sortTasks}>
+Sort Tasks (Divide & Conquer)
+</button>
+)
+
+}
