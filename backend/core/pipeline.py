@@ -16,13 +16,17 @@ except ImportError:
 try:
     from .scheduling_engine import allocate_for_schedule, default_servers, schedule_tasks
     from .scheduling_engine import resolve_schedule_type
+    from .stage_preprocessing import preprocess_tasks_stage_1_to_3
     from .status import pipeline_status
     from .task_cache import task_cache
+    from .tree_structure import build_server_hierarchy, flatten_servers, level_order_server_ids
 except ImportError:
     from core.scheduling_engine import allocate_for_schedule, default_servers, schedule_tasks
     from core.scheduling_engine import resolve_schedule_type
+    from core.stage_preprocessing import preprocess_tasks_stage_1_to_3
     from core.status import pipeline_status
     from core.task_cache import task_cache
+    from core.tree_structure import build_server_hierarchy, flatten_servers, level_order_server_ids
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -34,7 +38,7 @@ MODEL_PATH = MODEL_DIR / "execution_time_model.joblib"
 
 REQUIRED_COLUMNS = {"id", "priority", "cpu_request", "memory_request", "execution_time"}
 CHUNK_SIZE = 50_000
-SUPPORTED_SCHEDULE_TYPES = {"fast", "heap", "greedy", "dp", "backtracking", "branch_bound", "graph"}
+SUPPORTED_SCHEDULE_TYPES = {"fast", "hybrid", "sjf", "heap", "greedy", "dp", "backtracking", "branch_bound", "graph"}
 AUTO_SERVER_CPU = 100_000.0
 AUTO_SERVER_MEMORY = 200_000.0
 
@@ -92,6 +96,15 @@ def initialize_storage() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_processed_tasks_alloc_success ON processed_tasks(allocation_success)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_processed_tasks_sjf ON processed_tasks(predicted_execution_time, priority, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_processed_tasks_rank ON processed_tasks(schedule_rank, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_processed_tasks_unassigned_priority ON processed_tasks(allocation_success, priority_score DESC)"
         )
         _ensure_table_columns(conn)
         conn.commit()
@@ -152,7 +165,12 @@ def _process_chunk(
     chunk["priority_score"] = _compute_priority_score(chunk)
     chunk["predicted_server_load"] = predict_server_load(chunk)
 
-    scheduled = schedule_tasks(chunk.to_dict(orient="records"), schedule_type)
+    # Stage 1-3 preprocessing includes:
+    # - hashing for O(1) task-key operations
+    # - dependency-aware graph ordering when needed
+    # - divide-and-conquer merge sort prioritization
+    preprocessed = preprocess_tasks_stage_1_to_3(chunk.to_dict(orient="records"))
+    scheduled = schedule_tasks(preprocessed, schedule_type)
     for row in scheduled:
         row["schedule_rank"] = int(row.get("schedule_rank", 0)) + rank_offset
 
@@ -206,7 +224,7 @@ def _persist_chunk(conn: sqlite3.Connection, chunk: pd.DataFrame) -> None:
     conn.commit()
 
 
-def run_pipeline(csv_path: Path, schedule_type: str = "heap") -> None:
+def run_pipeline(csv_path: Path, schedule_type: str = "heap", initial_unused_servers: int = 3) -> None:
     initialize_storage()
     task_cache.clear()
 
@@ -215,7 +233,8 @@ def run_pipeline(csv_path: Path, schedule_type: str = "heap") -> None:
         schedule_type = "fast"
 
     pipeline_status.reset()
-    pipeline_status.update(message=f"Pipeline started using {schedule_type}")
+    server_count = max(1, int(initial_unused_servers or 1))
+    pipeline_status.update(message=f"Pipeline started using {schedule_type}", server_count=server_count)
 
     try:
         total_rows = _count_rows(csv_path)
@@ -238,7 +257,7 @@ def run_pipeline(csv_path: Path, schedule_type: str = "heap") -> None:
             first_chunk = True
             processed = 0
             total_unassigned = 0
-            servers = default_servers()
+            servers = default_servers(server_count)
 
             for chunk in pd.read_csv(csv_path, chunksize=CHUNK_SIZE):
                 if first_chunk:
@@ -313,6 +332,67 @@ def reschedule_existing_tasks(schedule_type: str) -> Dict:
             return {"rescheduled": 0, "schedule_type": schedule_type}
 
         effective_schedule = resolve_schedule_type(schedule_type, total)
+
+        # Fast path for large datasets: rank directly in SQLite for SJF.
+        # This avoids Python chunk iteration and allocation recomputation.
+        if effective_schedule == "sjf":
+            already_sjf = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM processed_tasks
+                WHERE COALESCE(scheduling_type, '') <> 'sjf'
+                """
+            ).fetchone()[0]
+            if int(already_sjf or 0) == 0:
+                total_unassigned = conn.execute(
+                    "SELECT COUNT(*) FROM processed_tasks WHERE allocation_success = 0"
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO pipeline_runs (schedule_type, total_rows, completed_rows, status) VALUES (?, ?, ?, ?)",
+                    (effective_schedule, total, total, "completed"),
+                )
+                conn.commit()
+                return {
+                    "rescheduled": int(total),
+                    "schedule_type": effective_schedule,
+                    "unassigned": int(total_unassigned),
+                    "skipped": True,
+                }
+            conn.execute("PRAGMA busy_timeout=60000")
+            conn.execute(
+                """
+                WITH ranked AS (
+                    SELECT
+                        id,
+                        ROW_NUMBER() OVER (
+                            ORDER BY
+                                COALESCE(predicted_execution_time, execution_time, 0.0) ASC,
+                                COALESCE(priority, 0.0) DESC,
+                                id ASC
+                        ) AS rn
+                    FROM processed_tasks
+                )
+                UPDATE processed_tasks
+                SET schedule_rank = (
+                        SELECT rn FROM ranked WHERE ranked.id = processed_tasks.id
+                    ),
+                    scheduling_type = ?
+                """,
+                (effective_schedule,),
+            )
+            total_unassigned = conn.execute(
+                "SELECT COUNT(*) FROM processed_tasks WHERE allocation_success = 0"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO pipeline_runs (schedule_type, total_rows, completed_rows, status) VALUES (?, ?, ?, ?)",
+                (effective_schedule, total, total, "completed"),
+            )
+            conn.commit()
+            return {
+                "rescheduled": int(total),
+                "schedule_type": effective_schedule,
+                "unassigned": int(total_unassigned),
+            }
         servers = default_servers()
         offset = 0
         global_rank = 0
@@ -518,7 +598,16 @@ def rebalance_unassigned_tasks(
                 if not candidates:
                     continue
 
-                best = min(candidates, key=_load_ratio)
+                # Best-fit choice: minimize post-placement normalized slack.
+                def _fit_key(server: Dict) -> tuple[float, float]:
+                    cpu_cap = float(server["cpu_capacity"])
+                    mem_cap = float(server["memory_capacity"])
+                    cpu_slack = ((float(server["cpu_available"]) - cpu_req) / cpu_cap) if cpu_cap else 1.0
+                    mem_slack = ((float(server["memory_available"]) - mem_req) / mem_cap) if mem_cap else 1.0
+                    fit_score = max(0.0, cpu_slack) + max(0.0, mem_slack)
+                    return (fit_score, _load_ratio(server))
+
+                best = min(candidates, key=_fit_key)
                 best["cpu_available"] -= cpu_req
                 best["memory_available"] -= mem_req
                 updates.append((best["server_id"], 1, str(task_id)))
@@ -604,13 +693,27 @@ def get_server_balance() -> Dict:
                 "memory_used": memory_used,
                 "cpu_capacity": cpu_cap,
                 "memory_capacity": mem_cap,
+                "cpu_available": max(0.0, cpu_cap - cpu_used),
+                "memory_available": max(0.0, mem_cap - memory_used),
                 "cpu_utilization_pct": round(cpu_util, 2),
                 "memory_utilization_pct": round(mem_util, 2),
                 "avg_predicted_load": round(float(avg_load or 0.0), 4),
             }
         )
 
+    # Basic tree concepts used in runtime response:
+    # - hierarchy construction
+    # - breadth-first traversal (level order)
+    hierarchy = build_server_hierarchy(servers)
+    tree_nodes = flatten_servers(hierarchy)
+    level_order = level_order_server_ids(hierarchy)
+
     return {
         "servers": servers,
         "remaining_unassigned": int(unassigned),
+        "server_tree": {
+            "root": hierarchy.server_id,
+            "level_order": level_order,
+            "nodes": tree_nodes,
+        },
     }

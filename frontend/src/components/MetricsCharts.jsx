@@ -11,12 +11,12 @@ import {
   YAxis,
 } from "recharts";
 
-const COLORS = ["#ef5b36", "#35a57e", "#3d6ae0", "#e0a53d", "#8f55da"];
+const COLORS = ["#ef5b36", "#35a57e", "#3d6ae0", "#e0a53d", "#1f8a9c"];
 
 export default function MetricsCharts({ priorityData = [], serverLoadData = [] }) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <div className="glass-card p-4">
+      <div className="glass-card p-4 md:p-5">
         <h3 className="mb-3 font-display text-lg font-semibold">Task Priority Distribution</h3>
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
@@ -35,7 +35,7 @@ export default function MetricsCharts({ priorityData = [], serverLoadData = [] }
         </div>
       </div>
 
-      <div className="glass-card p-4">
+      <div className="glass-card p-4 md:p-5">
         <h3 className="mb-3 font-display text-lg font-semibold">Server Load Distribution</h3>
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">

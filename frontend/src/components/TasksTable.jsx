@@ -4,9 +4,9 @@ export default function TasksTable({ tasks = [] }) {
   }
 
   return (
-    <div className="overflow-auto rounded-xl border border-ink/10 bg-white/80">
+    <div className="table-shell">
       <table className="min-w-[1050px] w-full text-sm">
-        <thead className="bg-dawn/90 text-left font-display text-xs uppercase tracking-wide text-ink/65">
+        <thead className="table-head text-left font-display text-xs uppercase tracking-wide text-ink/65">
           <tr>
             <th className="px-3 py-2">ID</th>
             <th className="px-3 py-2">Rank</th>
@@ -18,12 +18,13 @@ export default function TasksTable({ tasks = [] }) {
             <th className="px-3 py-2">Priority Score</th>
             <th className="px-3 py-2">Server</th>
             <th className="px-3 py-2">Allocated</th>
+            <th className="px-3 py-2">Task Status</th>
             <th className="px-3 py-2">Algo</th>
           </tr>
         </thead>
         <tbody>
           {tasks.map((task) => (
-            <tr key={task.id} className="border-t border-ink/10 hover:bg-white">
+            <tr key={task.id} className="table-row border-t border-ink/10">
               <td className="px-3 py-2 font-medium">{task.id}</td>
               <td className="px-3 py-2">{task.schedule_rank ?? "-"}</td>
               <td className="px-3 py-2">{Number(task.priority).toFixed(2)}</td>
@@ -40,6 +41,19 @@ export default function TasksTable({ tasks = [] }) {
                   }`}
                 >
                   {Number(task.allocation_success) ? "yes" : "no"}
+                </span>
+              </td>
+              <td className="px-3 py-2">
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                    task.task_status === "completed"
+                      ? "bg-mint/20 text-mint"
+                      : task.task_status === "queued"
+                      ? "bg-sky-100 text-sky-700"
+                      : "bg-red-100 text-red-600"
+                  }`}
+                >
+                  {task.task_status || "unknown"}
                 </span>
               </td>
               <td className="px-3 py-2">{task.scheduling_type || "-"}</td>

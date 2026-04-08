@@ -1,25 +1,24 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import TasksTable from "../components/TasksTable";
-import { usePipeline } from "../context/PipelineContext";
-import { runSchedule } from "../services/api";
-
-const ALGORITHMS = [
-  { value: "fast", label: "fast (recommended)" },
-  { value: "heap", label: "heap" },
-  { value: "greedy", label: "greedy" },
-  { value: "dp", label: "dp" },
-  { value: "backtracking", label: "backtracking" },
-  { value: "branch_bound", label: "branch_bound" },
-  { value: "graph", label: "graph" },
-];
+import { usePipeline } from "../context/usePipeline";
+import { fetchTasks, runSchedule } from "../services/api";
 
 export default function SchedulingPage() {
-  const [algorithm, setAlgorithm] = useState("fast");
-  const [result, setResult] = useState(null);
+  const cachedRaw =
+    typeof window !== "undefined" ? window.sessionStorage.getItem("cm_scheduling_cache") : null;
+  let cached = null;
+  try {
+    cached = cachedRaw ? JSON.parse(cachedRaw) : null;
+  } catch {
+    cached = null;
+  }
+
+  const [algorithm] = useState("sjf");
+  const [result, setResult] = useState(cached?.result || { page: { tasks: [] }, result: null });
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const { isProcessing, isCompleted, hasRun } = usePipeline();
+  const [error, setError] = useState(cached?.error || "");
+  const { isProcessing, isCompleted, hasRun, dataVersion, notifyDataChanged } = usePipeline();
 
   const locked = isProcessing || !hasRun;
 
@@ -29,22 +28,47 @@ export default function SchedulingPage() {
     try {
       const res = await runSchedule(algorithm, 1, 50);
       setResult(res);
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem("cm_scheduling_cache", JSON.stringify({ result: res, error: "" }));
+      }
+      notifyDataChanged();
     } catch (err) {
-      setError(err?.response?.data?.detail || "Scheduling update failed");
+      const message = err?.response?.data?.detail || "Scheduling update failed";
+      setError(message);
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem("cm_scheduling_cache", JSON.stringify({ result, error: message }));
+      }
     } finally {
       setLoading(false);
     }
   };
 
+  useEffect(() => {
+    if (!hasRun) return;
+    fetchTasks(1, 50)
+      .then((res) =>
+        setResult((prev) => {
+          const next = { ...prev, page: res };
+          if (typeof window !== "undefined") {
+            window.sessionStorage.setItem("cm_scheduling_cache", JSON.stringify({ result: next, error }));
+          }
+          return next;
+        })
+      )
+      .catch(() => {
+        // keep existing result on transient errors
+      });
+  }, [hasRun, dataVersion, error]);
+
   return (
     <section className="space-y-4">
-      <div className="glass-card p-5">
+      <div className="glass-card p-5 md:p-6">
         <h2 className="font-display text-xl font-semibold">Step 3: Scheduling Strategy</h2>
         <p className="mt-1 text-sm text-ink/65">
-          This page only handles scheduling concept. Upload is separate in Step 1.
+          This page applies a single scheduling concept: Shortest Job First (SJF).
         </p>
         <p className="mt-1 text-sm text-ink/55">
-          Fast mode automatically chooses the quickest practical strategy for large datasets.
+          Tasks with shorter execution time are scheduled first for better throughput.
         </p>
 
         {locked && (
@@ -62,23 +86,14 @@ export default function SchedulingPage() {
         )}
 
         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-          <select
-            value={algorithm}
-            onChange={(e) => setAlgorithm(e.target.value)}
-            className="w-full rounded-xl border border-ink/15 bg-white px-3 py-2 sm:max-w-xs"
-            disabled={locked || loading}
-          >
-            {ALGORITHMS.map((algo) => (
-              <option key={algo.value} value={algo.value}>
-                {algo.label}
-              </option>
-            ))}
-          </select>
+          <div className="w-full rounded-xl border border-ink/15 bg-white/85 px-3 py-2 text-sm font-medium sm:max-w-xs">
+            Scheduling: SJF
+          </div>
 
           <button
             onClick={onRun}
             disabled={loading || locked}
-            className="rounded-xl bg-gradient-to-r from-ember to-orange-400 px-5 py-2.5 font-semibold text-white disabled:opacity-50"
+            className="btn-primary"
           >
             {loading ? "Applying..." : "Apply Scheduling"}
           </button>
@@ -92,7 +107,7 @@ export default function SchedulingPage() {
         )}
       </div>
 
-      <div className="glass-card p-4">
+      <div className="glass-card p-4 md:p-5">
         <h3 className="mb-3 font-display text-lg font-semibold">Preview (First Page)</h3>
         <TasksTable tasks={result?.page?.tasks || []} />
       </div>

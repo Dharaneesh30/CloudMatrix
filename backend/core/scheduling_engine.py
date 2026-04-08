@@ -10,6 +10,7 @@ try:
     from .greedy_allocator import allocate_greedy
     from .heap_scheduler import schedule_with_heap
     from .merge_sort import merge_sort_tasks
+    from .sjf_scheduler import schedule_sjf
 except ImportError:
     from backtracking_allocator import allocate_backtracking
     from branch_bound import schedule_branch_and_bound
@@ -18,32 +19,23 @@ except ImportError:
     from greedy_allocator import allocate_greedy
     from heap_scheduler import schedule_with_heap
     from merge_sort import merge_sort_tasks
+    from sjf_scheduler import schedule_sjf
 
 
-def default_servers() -> List[Dict]:
-    return [
-        {
-            "server_id": "S1",
-            "cpu_capacity": 800.0,
-            "memory_capacity": 1600.0,
-            "cpu_available": 800.0,
-            "memory_available": 1600.0,
-        },
-        {
-            "server_id": "S2",
-            "cpu_capacity": 800.0,
-            "memory_capacity": 1600.0,
-            "cpu_available": 800.0,
-            "memory_available": 1600.0,
-        },
-        {
-            "server_id": "S3",
-            "cpu_capacity": 800.0,
-            "memory_capacity": 1600.0,
-            "cpu_available": 800.0,
-            "memory_available": 1600.0,
-        },
-    ]
+def default_servers(server_count: int = 3) -> List[Dict]:
+    count = max(1, int(server_count or 1))
+    servers: List[Dict] = []
+    for idx in range(1, count + 1):
+        servers.append(
+            {
+                "server_id": f"S{idx}",
+                "cpu_capacity": 800.0,
+                "memory_capacity": 1600.0,
+                "cpu_available": 800.0,
+                "memory_available": 1600.0,
+            }
+        )
+    return servers
 
 
 def resolve_schedule_type(requested_type: str, task_count: int) -> str:
@@ -53,8 +45,12 @@ def resolve_schedule_type(requested_type: str, task_count: int) -> str:
     """
     algo = (requested_type or "fast").lower().strip()
 
-    if algo == "fast":
-        return "heap"
+    if algo in {"fast", "hybrid"}:
+        if task_count <= 22:
+            return "backtracking"
+        if task_count <= 5000:
+            return "branch_bound"
+        return "greedy"
 
     if algo == "backtracking":
         return "backtracking" if task_count <= 22 else "heap"
@@ -76,6 +72,8 @@ def schedule_tasks(tasks: List[Dict], schedule_type: str) -> List[Dict]:
 
     if algo == "heap":
         return schedule_with_heap(tasks)
+    if algo == "sjf":
+        return schedule_sjf(tasks)
     if algo == "greedy":
         ordered = merge_sort_tasks(tasks, key="priority_score", reverse=True)
         return _with_rank(ordered)

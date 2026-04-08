@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import MetricsCharts from "../components/MetricsCharts";
 import ProgressStatus from "../components/ProgressStatus";
-import { usePipeline } from "../context/PipelineContext";
+import { usePipeline } from "../context/usePipeline";
 import { fetchMetrics } from "../services/api";
 
 function StatCard({ title, value }) {
   return (
-    <div className="glass-card p-4">
+    <div className="metric-card">
       <p className="text-xs uppercase tracking-wider text-ink/55">{title}</p>
       <p className="mt-2 font-display text-2xl font-semibold">{value}</p>
     </div>
@@ -19,7 +19,7 @@ export default function DashboardPage() {
   const [error, setError] = useState("");
   const { status } = usePipeline();
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       setError("");
       const res = await fetchMetrics();
@@ -35,17 +35,22 @@ export default function DashboardPage() {
           "Failed to load metrics"
       );
     }
-  };
+  }, []);
 
   useEffect(() => {
-    load();
+    const kickoff = setTimeout(() => {
+      void load();
+    }, 0);
     const timer = setInterval(load, 4000);
-    return () => clearInterval(timer);
-  }, []);
+    return () => {
+      clearTimeout(kickoff);
+      clearInterval(timer);
+    };
+  }, [load]);
 
   return (
     <section className="space-y-4">
-      <div className="glass-card p-5">
+      <div className="glass-card p-5 md:p-6">
         <h2 className="font-display text-2xl font-semibold">Step 2: Monitor Pipeline</h2>
         <p className="text-sm text-ink/65">Track progress here while backend processing continues in background.</p>
       </div>

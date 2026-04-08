@@ -12,7 +12,7 @@ export default function Dashboard() {
     try {
       await api.get("/health");
       return true;
-    } catch (_err) {
+    } catch {
       setMessage("Backend is not reachable. Start the server and try again.");
       return false;
     }

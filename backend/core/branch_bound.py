@@ -3,7 +3,6 @@ from __future__ import annotations
 import heapq
 from typing import Dict, List, Tuple
 
-
 def schedule_branch_and_bound(tasks: List[Dict]) -> List[Dict]:
     """
     Branch-and-bound over top-K candidates by priority score.
@@ -64,7 +63,6 @@ def schedule_branch_and_bound(tasks: List[Dict]) -> List[Dict]:
         result.append(row)
     return result
 
-
 def _objective(order: List[Dict]) -> float:
     # Minimize weighted completion time proxy.
     total = 0.0
@@ -75,7 +73,6 @@ def _objective(order: List[Dict]) -> float:
         completion += duration
         total += completion / weight + (rank * 0.01)
     return total
-
 
 def _lower_bound(chosen: List[Dict], remaining: List[Dict]) -> float:
     score = _objective(chosen)

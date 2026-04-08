@@ -58,7 +58,7 @@ function ServerAllocation() {
           <ul className="alloc-list">
             {allocations.map((s, i) => (
               <li key={i}>
-                Server <strong>{s.server}</strong> -> Task <strong>{s.task_id ?? s.task ?? "unknown"}</strong>
+                Server <strong>{s.server}</strong> {"->"} Task <strong>{s.task_id ?? s.task ?? "unknown"}</strong>
               </li>
             ))}
           </ul>

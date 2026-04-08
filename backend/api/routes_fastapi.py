@@ -47,19 +47,15 @@ async def health() -> dict:
 async def upload_dataset(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    schedule_type: str = Form(default="heap"),
+    unused_servers: int = Form(default=3),
 ) -> dict:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is missing")
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are supported")
 
-    schedule_type = schedule_type.lower().strip()
-    if schedule_type not in SUPPORTED_SCHEDULE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported schedule_type. Use one of: {sorted(SUPPORTED_SCHEDULE_TYPES)}",
-        )
+    if unused_servers < 1 or unused_servers > 500:
+        raise HTTPException(status_code=400, detail="unused_servers must be between 1 and 500")
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     safe_name = f"{uuid4().hex}_{Path(file.filename).name}"
@@ -82,22 +78,74 @@ async def upload_dataset(
         progress=0,
         rows_processed=0,
         total_rows=0,
-        message=f"Dataset uploaded. Processing queued with {schedule_type}",
+        message=f"Dataset uploaded. Automatic pipeline queued with {unused_servers} servers",
         error=None,
+        server_count=int(unused_servers),
     )
-    background_tasks.add_task(run_pipeline, target_path, schedule_type)
+    # Stage selection is internal-only; users trigger one automated pipeline.
+    background_tasks.add_task(run_pipeline, target_path, "fast", int(unused_servers))
 
     return {
         "message": "Dataset uploaded and pipeline started",
         "filename": file.filename,
         "saved_as": safe_name,
-        "schedule_type": schedule_type,
+        "processing_mode": "auto",
+        "unused_servers": int(unused_servers),
     }
 
 
 @router.get("/status")
 async def get_status() -> dict:
-    return pipeline_status.snapshot()
+    snapshot = pipeline_status.snapshot()
+
+    # Recover UI state after backend restarts by inferring last known run from SQLite.
+    # Without this, pages gated by `hasRun` stay locked even when processed data exists.
+    if int(snapshot.get("rows_processed", 0) or 0) > 0 or int(snapshot.get("total_rows", 0) or 0) > 0:
+        return snapshot
+
+    try:
+        initialize_storage()
+        with sqlite3.connect(DB_PATH, timeout=8) as conn:
+            total_tasks = int(conn.execute("SELECT COUNT(*) FROM processed_tasks").fetchone()[0] or 0)
+            recent = conn.execute(
+                """
+                SELECT status, total_rows, completed_rows, schedule_type, created_at
+                FROM pipeline_runs
+                ORDER BY run_id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+    except sqlite3.DatabaseError:
+        return snapshot
+
+    if total_tasks <= 0:
+        return snapshot
+
+    if recent:
+        run_status = str(recent[0] or "completed").lower()
+        total_rows = int(recent[1] or total_tasks)
+        completed_rows = int(recent[2] or total_tasks)
+        schedule_type = str(recent[3] or "unknown")
+        created_at = str(recent[4] or "")
+        phase = "completed" if run_status in {"completed", "success"} else run_status
+        message = f"Recovered last run ({schedule_type}) from {created_at}".strip()
+    else:
+        phase = "completed"
+        total_rows = total_tasks
+        completed_rows = total_tasks
+        message = "Recovered processed dataset from storage"
+
+    recovered = {
+        **snapshot,
+        "status": phase,
+        "progress": 100 if total_rows > 0 and completed_rows >= total_rows else int((completed_rows / max(total_rows, 1)) * 100),
+        "rows_processed": completed_rows,
+        "total_rows": total_rows,
+        "message": message,
+        "error": None,
+    }
+    pipeline_status.update(**recovered)
+    return recovered
 
 
 @router.get("/tasks")
@@ -125,20 +173,108 @@ async def get_tasks(page: int = 1, limit: int = 50) -> dict:
             (limit, offset),
         ).fetchall()
 
+    status = pipeline_status.snapshot()
+    rows_processed = int(status.get("rows_processed", 0) or 0)
+    phase = str(status.get("status") or "idle")
+    tasks = []
+    for row in rows:
+        payload = dict(row)
+        rank = int(payload.get("schedule_rank") or 0)
+        allocated = int(payload.get("allocation_success") or 0) == 1
+        if phase in {"queued", "processing"} and rank > rows_processed:
+            payload["task_status"] = "queued"
+        elif allocated:
+            payload["task_status"] = "completed"
+        else:
+            payload["task_status"] = "unassigned"
+        tasks.append(payload)
+
     return {
         "page": page,
         "limit": limit,
         "total": int(total),
-        "tasks": [dict(row) for row in rows],
+        "tasks": tasks,
+    }
+
+
+@router.get("/unassigned-tasks")
+async def get_unassigned_tasks(
+    page: int = 1,
+    limit: int = 50,
+    include_total: bool = Query(default=False),
+) -> dict:
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+
+    initialize_storage()
+    offset = (page - 1) * limit
+    last_exc = None
+
+    for _ in range(5):
+        try:
+            with sqlite3.connect(DB_PATH, timeout=15) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=8000")
+                conn.execute("PRAGMA query_only=1")
+                conn.row_factory = sqlite3.Row
+                total = None
+                if include_total:
+                    total = conn.execute(
+                        "SELECT COUNT(*) FROM processed_tasks WHERE allocation_success = 0"
+                    ).fetchone()[0]
+                rows = conn.execute(
+                    """
+                    SELECT id, priority, cpu_request, memory_request, execution_time,
+                           predicted_execution_time, priority_score, schedule_rank, scheduling_type,
+                           predicted_server_load, allocated_server, allocation_success
+                    FROM processed_tasks
+                    WHERE allocation_success = 0
+                    ORDER BY priority_score DESC, id ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (limit + 1, offset),
+                ).fetchall()
+                has_more = len(rows) > limit
+                rows = rows[:limit]
+
+            return {
+                "page": page,
+                "limit": limit,
+                "total": int(total) if total is not None else None,
+                "has_more": bool(has_more),
+                "tasks": [{**dict(row), "task_status": "unassigned"} for row in rows],
+                "degraded": False,
+            }
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+            last_exc = exc
+            time.sleep(0.35)
+
+    return {
+        "page": page,
+        "limit": limit,
+        "total": 0 if include_total else None,
+        "has_more": False,
+        "tasks": [],
+        "degraded": True,
+        "degraded_reason": str(last_exc) if last_exc else "temporary_unassigned_unavailable",
     }
 
 
 @router.get("/task/{task_id}")
 async def get_task(task_id: str) -> dict:
     initialize_storage()
+    status = pipeline_status.snapshot()
+    phase = str(status.get("status") or "idle")
+
     cached = task_cache.get(task_id)
     if cached is not None:
-        return cached
+        cached_allocated = int(cached.get("allocation_success") or 0) == 1 or bool(cached.get("allocated_server"))
+        # Avoid stale "not allocated" responses:
+        # if a task was cached earlier as unassigned, re-read from DB on lookup.
+        if cached_allocated:
+            return cached
 
     with sqlite3.connect(DB_PATH, timeout=60) as conn:
         conn.row_factory = sqlite3.Row
@@ -157,6 +293,17 @@ async def get_task(task_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
 
     payload = dict(row)
+    rows_processed = int(status.get("rows_processed", 0) or 0)
+    rank = int(payload.get("schedule_rank") or 0)
+    allocated = int(payload.get("allocation_success") or 0) == 1 or bool(payload.get("allocated_server"))
+    payload["allocation_success"] = 1 if allocated else 0
+    if phase in {"queued", "processing"} and rank > rows_processed:
+        payload["task_status"] = "queued"
+    elif allocated:
+        payload["task_status"] = "completed"
+    else:
+        payload["task_status"] = "unassigned"
+    payload["allocated"] = "yes" if allocated else "no"
     task_cache.put(task_id, payload)
     return payload
 
@@ -187,16 +334,129 @@ async def schedule_tasks_endpoint(
     }
 
 
+def _quick_processing_metrics(status: dict) -> dict:
+    """
+    Fast non-blocking metrics payload for heavy ingestion windows.
+    Avoids large aggregate scans while pipeline writes are active.
+    """
+    processed = int(status.get("rows_processed", 0) or 0)
+    return {
+        "total_tasks": processed,
+        "avg_execution_time": 0.0,
+        "avg_predicted_execution_time": 0.0,
+        "avg_priority": 0.0,
+        "avg_predicted_server_load": 0.0,
+        "active_servers": 0,
+        "priority_distribution": [],
+        "server_load_distribution": [],
+        "schedule_mix": [],
+        "status": status,
+        "recent_run": None,
+        "degraded": True,
+        "degraded_reason": "processing_snapshot",
+    }
+
+
+def _lite_metrics_from_db(status: dict) -> dict:
+    last_exc = None
+    for _ in range(2):
+        try:
+            with sqlite3.connect(DB_PATH, timeout=8) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=3000")
+                conn.execute("PRAGMA query_only=1")
+                total = conn.execute("SELECT COUNT(*) FROM processed_tasks").fetchone()[0]
+                avg_exec = conn.execute("SELECT COALESCE(AVG(execution_time), 0) FROM processed_tasks").fetchone()[0]
+                avg_pred = conn.execute("SELECT COALESCE(AVG(predicted_execution_time), 0) FROM processed_tasks").fetchone()[0]
+                avg_priority = conn.execute("SELECT COALESCE(AVG(priority), 0) FROM processed_tasks").fetchone()[0]
+                avg_load = conn.execute("SELECT COALESCE(AVG(predicted_server_load), 0) FROM processed_tasks").fetchone()[0]
+                active_servers = conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT allocated_server)
+                    FROM processed_tasks
+                    WHERE allocated_server IS NOT NULL
+                    """
+                ).fetchone()[0]
+                recent_run = conn.execute(
+                    """
+                    SELECT schedule_type, total_rows, completed_rows, status, created_at
+                    FROM pipeline_runs
+                    ORDER BY run_id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+
+            return {
+                "total_tasks": int(total),
+                "avg_execution_time": float(avg_exec),
+                "avg_predicted_execution_time": float(avg_pred),
+                "avg_priority": float(avg_priority),
+                "avg_predicted_server_load": float(avg_load),
+                "active_servers": int(active_servers),
+                "priority_distribution": [],
+                "server_load_distribution": [],
+                "schedule_mix": [],
+                "status": status,
+                "recent_run": (
+                    {
+                        "schedule_type": recent_run[0],
+                        "total_rows": recent_run[1],
+                        "completed_rows": recent_run[2],
+                        "status": recent_run[3],
+                        "created_at": recent_run[4],
+                    }
+                    if recent_run
+                    else None
+                ),
+                "degraded": False,
+                "mode": "lite",
+            }
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+            last_exc = exc
+            time.sleep(0.35)
+
+    return {
+        "total_tasks": int(status.get("rows_processed", 0) or 0),
+        "avg_execution_time": 0.0,
+        "avg_predicted_execution_time": 0.0,
+        "avg_priority": 0.0,
+        "avg_predicted_server_load": 0.0,
+        "active_servers": 0,
+        "priority_distribution": [],
+        "server_load_distribution": [],
+        "schedule_mix": [],
+        "status": status,
+        "recent_run": None,
+        "degraded": True,
+        "degraded_reason": str(last_exc) if last_exc else "temporary_metrics_unavailable",
+        "mode": "lite",
+    }
+
+
 @router.get("/metrics")
-async def get_metrics() -> dict:
+async def get_metrics(mode: str = Query(default="auto")) -> dict:
     initialize_storage()
+    status = pipeline_status.snapshot()
+    normalized_mode = (mode or "auto").strip().lower()
+
+    if normalized_mode not in {"auto", "full", "lite"}:
+        raise HTTPException(status_code=400, detail="mode must be one of: auto, full, lite")
+
+    # During active ingestion, return an immediate snapshot by default.
+    if normalized_mode in {"auto", "lite"} and status.get("status") in {"queued", "processing"}:
+        return _quick_processing_metrics(status)
+    if normalized_mode == "lite":
+        return _lite_metrics_from_db(status)
+
     # During heavy pipeline writes, SQLite may temporarily lock.
     # Retry briefly, then return a degraded but valid response.
     last_exc = None
-    for _ in range(3):
+    for _ in range(2):
         try:
-            with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            with sqlite3.connect(DB_PATH, timeout=8) as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=3000")
+                conn.execute("PRAGMA query_only=1")
                 total = conn.execute("SELECT COUNT(*) FROM processed_tasks").fetchone()[0]
                 avg_exec = conn.execute("SELECT COALESCE(AVG(execution_time), 0) FROM processed_tasks").fetchone()[0]
                 avg_pred = conn.execute("SELECT COALESCE(AVG(predicted_execution_time), 0) FROM processed_tasks").fetchone()[0]
@@ -276,11 +536,10 @@ async def get_metrics() -> dict:
                 ),
                 "degraded": False,
             }
-        except sqlite3.OperationalError as exc:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
             last_exc = exc
             time.sleep(0.35)
 
-    status = pipeline_status.snapshot()
     return {
         "total_tasks": int(status.get("rows_processed", 0) or 0),
         "avg_execution_time": 0.0,
@@ -300,7 +559,21 @@ async def get_metrics() -> dict:
 
 @router.get("/server-balance")
 async def server_balance() -> dict:
-    return get_server_balance()
+    last_exc = None
+    for _ in range(2):
+        try:
+            return get_server_balance()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+            last_exc = exc
+            time.sleep(0.25)
+
+    return {
+        "servers": [],
+        "remaining_unassigned": 0,
+        "server_tree": {"root": "ROOT", "level_order": ["ROOT"], "nodes": []},
+        "degraded": True,
+        "degraded_reason": str(last_exc) if last_exc else "temporary_server_balance_unavailable",
+    }
 
 
 @router.post("/rebalance-unassigned")
