@@ -1,52 +1,41 @@
 class Scheduler:
     def __init__(self, servers):
-        self.servers = servers   
+        self.servers = servers
+    def find_best_server(self, servers):
+
+        # Base case
+        if len(servers) == 1:
+            return servers[0]
+
+        mid = len(servers) // 2
+
+        # Divide
+        left_best = self.find_best_server(servers[:mid])
+        right_best = self.find_best_server(servers[mid:])
+
+        # Conquer (choose better server)
+        if left_best.current_cpu_usage() < right_best.current_cpu_usage():
+            return left_best
+        else:
+            return right_best
+
+
+    # Schedule tasks using the divide and conquer method
     def schedule_tasks(self, tasks):
+
         allocation = {}
+
         for task in tasks:
-            best_server = None
-            best_score = None
-            for server in self.servers:
-                if server.can_allocate(task):
-                    remaining_cpu = server.available_cpu() - task.cpu_required
-                    if best_score is None or remaining_cpu < best_score:
-                        best_score = remaining_cpu
-                        best_server = server
-            if best_server:
+
+            # find best server
+            best_server = self.find_best_server(self.servers)
+
+            if best_server.can_allocate(task):
                 best_server.assign_task(task)
                 allocation[task.task_id] = best_server.server_id
-                print(f"Task {task.task_id} -> Server {best_server.server_id}")
+                print(f"Task {task.task_id} allocated to Server {best_server.server_id}")
             else:
                 allocation[task.task_id] = None
-                print(f"Task {task.task_id} -> No server available")
+                print(f"Task {task.task_id} could not be allocated")
+
         return allocation
-def find_available_servers(task, servers):
-    available_servers = []
-    for server in servers:
-        if server.can_allocate(task):
-            available_servers.append(server)
-    return available_servers
-def select_least_loaded_server(servers):
-    if len(servers) == 0:
-        return None
-    best_server = servers[0]
-    for server in servers:
-        if server.current_cpu_usage() < best_server.current_cpu_usage():
-            best_server = server
-    return best_server
-def schedule_task(task, servers):
-    available_servers = find_available_servers(task, servers)
-    if len(available_servers) == 0:
-        return None
-    selected_server = select_least_loaded_server(available_servers)
-    selected_server.assign_task(task)
-    return selected_server
-def schedule_multiple_tasks(tasks, servers):
-    results = []
-    for task in tasks:
-        server = schedule_task(task, servers)
-        if server:
-            results.append((task.task_id, server.server_id))
-        else:
-            results.append((task.task_id, "No Server Available"))
-    return results
