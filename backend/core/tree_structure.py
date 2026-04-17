@@ -78,6 +78,38 @@ def level_order_server_ids(root: ServerNode) -> List[str]:
     return order
 
 
+def assign_to_tree(tasks: List[Dict], servers: List[Dict]) -> Dict:
+    """
+    Build DataCenter -> Servers -> TaskNodes structure using current allocations.
+    """
+    server_map: Dict[str, Dict] = {}
+    for server in servers:
+        sid = str(server.get("server_id", "unknown"))
+        server_map[sid] = {
+            "server_id": sid,
+            "nodes": [],
+        }
+
+    for task in tasks:
+        sid = str(task.get("allocated_server") or "unassigned")
+        if sid not in server_map:
+            server_map[sid] = {"server_id": sid, "nodes": []}
+        server_map[sid]["nodes"].append(
+            {
+                "task_id": str(task.get("id", "unknown")),
+                "priority_score": float(task.get("priority_score", task.get("priority", 0.0)) or 0.0),
+            }
+        )
+
+    for server in server_map.values():
+        server["nodes"].sort(key=lambda x: x["priority_score"], reverse=True)
+
+    return {
+        "datacenter": "CloudMatrix-DC",
+        "servers": list(server_map.values()),
+    }
+
+
 @dataclass
 class TaskTreeNode:
     task_id: str

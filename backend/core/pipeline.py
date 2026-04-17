@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import csv
+import random
 import sqlite3
 from pathlib import Path
 from typing import Dict, Iterable, List
 
 import pandas as pd
+try:
+    import duckdb
+except Exception:  # optional fast path dependency
+    duckdb = None
 
 try:
     from ..ai.load_predictor import predict_server_load
@@ -39,8 +45,9 @@ MODEL_PATH = MODEL_DIR / "execution_time_model.joblib"
 REQUIRED_COLUMNS = {"id", "priority", "cpu_request", "memory_request", "execution_time"}
 CHUNK_SIZE = 50_000
 SUPPORTED_SCHEDULE_TYPES = {"fast", "hybrid", "sjf", "heap", "greedy", "dp", "backtracking", "branch_bound", "graph"}
-AUTO_SERVER_CPU = 100_000.0
-AUTO_SERVER_MEMORY = 200_000.0
+FAST_DUCKDB_THRESHOLD = 1_000_000
+FAST_MAX_TASKS_PER_SERVER = 1000
+FAST_RESCHEDULE_THRESHOLD = 100_000
 
 
 def _connect_db() -> sqlite3.Connection:
@@ -125,10 +132,16 @@ def _ensure_table_columns(conn: sqlite3.Connection) -> None:
 
 
 def _count_rows(csv_path: Path) -> int:
-    total = 0
-    for chunk in pd.read_csv(csv_path, chunksize=CHUNK_SIZE, usecols=["id"]):
-        total += len(chunk)
-    return total
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as source:
+            reader = csv.reader(source)
+            next(reader, None)
+            return sum(1 for _ in reader)
+    except Exception:
+        total = 0
+        for chunk in pd.read_csv(csv_path, chunksize=CHUNK_SIZE, usecols=["id"]):
+            total += len(chunk)
+        return total
 
 
 def _validate_columns(columns: Iterable[str]) -> None:
@@ -194,20 +207,48 @@ def _process_chunk(
 def _persist_chunk(conn: sqlite3.Connection, chunk: pd.DataFrame) -> None:
     rows = [
         (
-            str(row["id"]),
-            float(row["priority"]),
-            float(row["cpu_request"]),
-            float(row["memory_request"]),
-            float(row["execution_time"]),
-            float(row["predicted_execution_time"]),
-            float(row["priority_score"]),
-            int(row["schedule_rank"]),
-            str(row.get("scheduling_type", "heap")),
-            float(row["predicted_server_load"]),
-            row.get("allocated_server"),
-            int(row.get("allocation_success", 0)),
+            str(task_id),
+            float(priority),
+            float(cpu_request),
+            float(memory_request),
+            float(execution_time),
+            float(predicted_execution_time),
+            float(priority_score),
+            int(schedule_rank),
+            str(scheduling_type or "heap"),
+            float(predicted_server_load),
+            allocated_server,
+            int(allocation_success or 0),
         )
-        for _, row in chunk.iterrows()
+        for (
+            task_id,
+            priority,
+            cpu_request,
+            memory_request,
+            execution_time,
+            predicted_execution_time,
+            priority_score,
+            schedule_rank,
+            scheduling_type,
+            predicted_server_load,
+            allocated_server,
+            allocation_success,
+        ) in chunk[
+            [
+                "id",
+                "priority",
+                "cpu_request",
+                "memory_request",
+                "execution_time",
+                "predicted_execution_time",
+                "priority_score",
+                "schedule_rank",
+                "scheduling_type",
+                "predicted_server_load",
+                "allocated_server",
+                "allocation_success",
+            ]
+        ].itertuples(index=False, name=None)
     ]
 
     conn.executemany(
@@ -224,6 +265,246 @@ def _persist_chunk(conn: sqlite3.Connection, chunk: pd.DataFrame) -> None:
     conn.commit()
 
 
+def _persist_batch_rows(conn: sqlite3.Connection, rows: List[tuple]) -> None:
+    if not rows:
+        return
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO processed_tasks (
+            id, priority, cpu_request, memory_request, execution_time,
+            predicted_execution_time, priority_score, schedule_rank, scheduling_type,
+            predicted_server_load, allocated_server, allocation_success
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def _rank_order_sql(schedule_type: str) -> str:
+    """
+    SQL ORDER BY clause equivalent for scheduler ranking.
+    """
+    if schedule_type == "sjf":
+        return """
+        COALESCE(predicted_execution_time, execution_time, 0.0) ASC,
+        COALESCE(priority, 0.0) DESC,
+        id ASC
+        """
+    if schedule_type in {"heap", "branch_bound", "backtracking", "graph"}:
+        return """
+        COALESCE(priority_score, priority, 0.0) DESC,
+        COALESCE(priority, 0.0) DESC,
+        id ASC
+        """
+    if schedule_type in {"greedy", "dp"}:
+        return """
+        COALESCE(priority_score, priority, 0.0) DESC,
+        id ASC
+        """
+    # Safe fallback: priority-first ordering.
+    return """
+    COALESCE(priority_score, priority, 0.0) DESC,
+    COALESCE(priority, 0.0) DESC,
+    id ASC
+    """
+
+
+def _reschedule_via_sql(conn: sqlite3.Connection, schedule_type: str, total: int) -> Dict:
+    conn.execute("PRAGMA busy_timeout=60000")
+    conn.execute(
+        f"""
+        WITH ranked AS (
+            SELECT
+                id,
+                ROW_NUMBER() OVER (
+                    ORDER BY {_rank_order_sql(schedule_type)}
+                ) AS rn
+            FROM processed_tasks
+        )
+        UPDATE processed_tasks
+        SET schedule_rank = (
+                SELECT rn FROM ranked WHERE ranked.id = processed_tasks.id
+            ),
+            scheduling_type = ?
+        """,
+        (schedule_type,),
+    )
+    total_unassigned = conn.execute(
+        "SELECT COUNT(*) FROM processed_tasks WHERE allocation_success = 0"
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO pipeline_runs (schedule_type, total_rows, completed_rows, status) VALUES (?, ?, ?, ?)",
+        (schedule_type, total, total, "completed"),
+    )
+    conn.commit()
+    return {
+        "rescheduled": int(total),
+        "schedule_type": schedule_type,
+        "unassigned": int(total_unassigned),
+        "fast_path": "sql",
+    }
+
+
+def _run_pipeline_duckdb_fast(
+    csv_path: Path,
+    requested_schedule: str,
+    initial_server_count: int,
+    total_rows: int,
+) -> None:
+    effective_schedule = resolve_schedule_type(requested_schedule, total_rows)
+    server_count = max(1, int(initial_server_count or 1))
+    pipeline_status.update(
+        message=f"Pipeline started using fast-duckdb ({effective_schedule}) with {server_count} servers",
+        total_rows=total_rows,
+        server_count=server_count,
+    )
+
+    if duckdb is None:
+        raise RuntimeError("duckdb is not installed for fast processing mode")
+
+    order_sql = (
+        "predicted_execution_time ASC, priority DESC, id ASC"
+        if effective_schedule == "sjf"
+        else "priority_score DESC, abs(hash(id)) ASC"
+    )
+
+    conn = _connect_db()
+    dcon = duckdb.connect(database=":memory:")
+    try:
+        conn.execute("DELETE FROM processed_tasks")
+        conn.execute(
+            "INSERT INTO pipeline_runs (schedule_type, total_rows, completed_rows, status) VALUES (?, ?, ?, ?)",
+            (effective_schedule, total_rows, 0, "processing"),
+        )
+        conn.commit()
+
+        csv_literal = str(csv_path).replace("\\", "\\\\").replace("'", "''")
+        dcon.execute(
+            f"""
+            CREATE VIEW raw_tasks AS
+            SELECT * FROM read_csv_auto('{csv_literal}', header=true, sample_size=-1);
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        col_names = {str(item[0]) for item in dcon.execute("DESCRIBE raw_tasks").fetchall()}
+        missing = REQUIRED_COLUMNS.difference(col_names)
+        if missing:
+            raise ValueError(f"Missing required CSV column(s): {', '.join(sorted(missing))}")
+
+        dcon.execute(
+            f"""
+            CREATE TABLE final_rows AS
+            WITH normalized AS (
+                SELECT
+                    CAST(id AS VARCHAR) AS id,
+                    COALESCE(TRY_CAST(priority AS DOUBLE), 0.0) AS priority,
+                    COALESCE(TRY_CAST(cpu_request AS DOUBLE), 0.0) AS cpu_request,
+                    COALESCE(TRY_CAST(memory_request AS DOUBLE), 0.0) AS memory_request,
+                    COALESCE(TRY_CAST(execution_time AS DOUBLE), 0.0) AS execution_time
+                FROM raw_tasks
+            ),
+            scored AS (
+                SELECT
+                    id, priority, cpu_request, memory_request, execution_time,
+                    execution_time AS predicted_execution_time,
+                    (priority * 2.0) + ((cpu_request + memory_request) / GREATEST(execution_time, 0.1)) AS priority_score,
+                    ((cpu_request + memory_request) / GREATEST(execution_time, 0.1)) AS predicted_server_load
+                FROM normalized
+            ),
+            ranked AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (ORDER BY {order_sql}) AS schedule_rank,
+                    ROW_NUMBER() OVER (ORDER BY predicted_server_load DESC, abs(hash(id)) ASC) AS rr
+                FROM scored
+            )
+            SELECT
+                id,
+                priority,
+                cpu_request,
+                memory_request,
+                execution_time,
+                predicted_execution_time,
+                priority_score,
+                schedule_rank,
+                '{effective_schedule}' AS scheduling_type,
+                predicted_server_load,
+                CONCAT('S', CAST(1 + MOD(rr - 1, {int(server_count)}) AS VARCHAR)) AS allocated_server,
+                1 AS allocation_success
+            FROM ranked
+            """
+        )
+
+        cursor = dcon.execute(
+            """
+            SELECT
+                id, priority, cpu_request, memory_request, execution_time,
+                predicted_execution_time, priority_score, schedule_rank, scheduling_type,
+                predicted_server_load, allocated_server, allocation_success
+            FROM final_rows
+            ORDER BY schedule_rank ASC
+            """
+        )
+
+        processed = 0
+        batch_size = 50_000
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            _persist_batch_rows(conn, rows)
+            processed += len(rows)
+            progress = min(100, int((processed / max(total_rows, 1)) * 100))
+            conn.execute(
+                """
+                UPDATE pipeline_runs
+                SET completed_rows = ?, status = ?
+                WHERE run_id = (SELECT MAX(run_id) FROM pipeline_runs)
+                """,
+                (processed, "processing"),
+            )
+            conn.commit()
+            pipeline_status.update(
+                status="processing",
+                progress=progress,
+                rows_processed=processed,
+                message=f"Processed {processed}/{total_rows} rows (fast-duckdb {effective_schedule})",
+            )
+
+        conn.execute(
+            """
+            UPDATE pipeline_runs
+            SET completed_rows = ?, status = ?
+            WHERE run_id = (SELECT MAX(run_id) FROM pipeline_runs)
+            """,
+            (processed, "completed"),
+        )
+        conn.commit()
+
+        pipeline_status.update(
+            status="completed",
+            progress=100,
+            rows_processed=processed,
+            total_rows=total_rows,
+            message=f"Pipeline completed (fast-duckdb {effective_schedule}). Unassigned tasks: 0",
+            error=None,
+        )
+    finally:
+        try:
+            dcon.close()
+        except Exception:
+            pass
+        conn.close()
+
+
 def run_pipeline(csv_path: Path, schedule_type: str = "heap", initial_unused_servers: int = 3) -> None:
     initialize_storage()
     task_cache.clear()
@@ -234,10 +515,20 @@ def run_pipeline(csv_path: Path, schedule_type: str = "heap", initial_unused_ser
 
     pipeline_status.reset()
     server_count = max(1, int(initial_unused_servers or 1))
+    _store_configured_server_count(server_count)
     pipeline_status.update(message=f"Pipeline started using {schedule_type}", server_count=server_count)
 
     try:
         total_rows = _count_rows(csv_path)
+        if total_rows >= FAST_DUCKDB_THRESHOLD and duckdb is not None:
+            _run_pipeline_duckdb_fast(
+                csv_path=csv_path,
+                requested_schedule=schedule_type,
+                initial_server_count=server_count,
+                total_rows=total_rows,
+            )
+            return
+
         effective_schedule = resolve_schedule_type(schedule_type, total_rows)
         pipeline_status.update(total_rows=total_rows)
 
@@ -316,6 +607,44 @@ def run_pipeline(csv_path: Path, schedule_type: str = "heap", initial_unused_ser
         pipeline_status.update(status="failed", message="Pipeline failed", error=str(exc))
 
 
+def _configured_server_count() -> int:
+    snapshot = pipeline_status.snapshot()
+    runtime = int(snapshot.get("server_count") or 0)
+    if runtime > 0:
+        return max(1, runtime)
+    return max(1, _read_configured_server_count(default=3))
+
+
+def get_configured_server_count() -> int:
+    return _configured_server_count()
+
+
+def _store_configured_server_count(server_count: int) -> None:
+    initialize_storage()
+    with _connect_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_config(key, value)
+            VALUES('server_count', ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """,
+            (str(max(1, int(server_count or 1))),),
+        )
+        conn.commit()
+
+
+def _read_configured_server_count(default: int = 3) -> int:
+    initialize_storage()
+    try:
+        with _connect_db() as conn:
+            row = conn.execute("SELECT value FROM app_config WHERE key = 'server_count'").fetchone()
+            if not row:
+                return int(default)
+            return max(1, int(str(row[0] or default)))
+    except Exception:
+        return int(default)
+
+
 def reschedule_existing_tasks(schedule_type: str) -> Dict:
     initialize_storage()
     task_cache.clear()
@@ -333,8 +662,51 @@ def reschedule_existing_tasks(schedule_type: str) -> Dict:
 
         effective_schedule = resolve_schedule_type(schedule_type, total)
 
-        # Fast path for large datasets: rank directly in SQLite for SJF.
-        # This avoids Python chunk iteration and allocation recomputation.
+        equivalent_types = {effective_schedule}
+        if total >= FAST_RESCHEDULE_THRESHOLD and effective_schedule in {"heap", "greedy"}:
+            # For very large datasets, these two orderings are both treated as fast-priority modes.
+            # Skipping cross-rewrites avoids expensive full-table updates.
+            equivalent_types.update({"heap", "greedy"})
+
+        placeholders = ",".join("?" for _ in equivalent_types)
+        already_current = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM processed_tasks
+            WHERE COALESCE(scheduling_type, '') NOT IN ({placeholders})
+            """,
+            tuple(sorted(equivalent_types)),
+        ).fetchone()[0]
+        if int(already_current or 0) == 0:
+            total_unassigned = conn.execute(
+                "SELECT COUNT(*) FROM processed_tasks WHERE allocation_success = 0"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO pipeline_runs (schedule_type, total_rows, completed_rows, status) VALUES (?, ?, ?, ?)",
+                (effective_schedule, total, total, "completed"),
+            )
+            conn.commit()
+            return {
+                "rescheduled": int(total),
+                "schedule_type": effective_schedule,
+                "unassigned": int(total_unassigned),
+                "skipped": True,
+            }
+
+        # Fast path for large datasets and SQL-friendly orderings.
+        # Avoids expensive OFFSET scans and per-row update loops.
+        if total >= FAST_RESCHEDULE_THRESHOLD and effective_schedule in {
+            "sjf",
+            "heap",
+            "greedy",
+            "branch_bound",
+            "backtracking",
+            "graph",
+            "dp",
+        }:
+            return _reschedule_via_sql(conn, effective_schedule, total)
+
+        # Existing SJF SQL path for small-medium datasets.
         if effective_schedule == "sjf":
             already_sjf = conn.execute(
                 """
@@ -393,7 +765,7 @@ def reschedule_existing_tasks(schedule_type: str) -> Dict:
                 "schedule_type": effective_schedule,
                 "unassigned": int(total_unassigned),
             }
-        servers = default_servers()
+        servers = default_servers(_configured_server_count())
         offset = 0
         global_rank = 0
         total_unassigned = 0
@@ -477,16 +849,32 @@ def _load_ratio(server: Dict) -> float:
     return (cpu_ratio + mem_ratio) / 2
 
 
-def _build_server_pool_from_db(conn: sqlite3.Connection) -> List[Dict]:
-    defaults = {s["server_id"]: dict(s) for s in default_servers()}
+def _pick_random_balanced_server(candidates: List[Dict], cpu_req: float, mem_req: float) -> Dict:
+    ranked = sorted(candidates, key=_load_ratio)
+    window = ranked[: max(1, min(4, len(ranked)))]
+    weights = []
+    for server in window:
+        cpu_cap = float(server["cpu_capacity"])
+        mem_cap = float(server["memory_capacity"])
+        cpu_slack = ((float(server["cpu_available"]) - cpu_req) / cpu_cap) if cpu_cap else 0.0
+        mem_slack = ((float(server["memory_available"]) - mem_req) / mem_cap) if mem_cap else 0.0
+        weight = max(0.05, 1.0 - _load_ratio(server) + max(0.0, cpu_slack) + max(0.0, mem_slack))
+        weights.append(weight)
+    return random.choices(window, weights=weights, k=1)[0]
+
+
+def _build_server_pool_from_db(conn: sqlite3.Connection, configured_count: int) -> List[Dict]:
+    defaults = {s["server_id"]: dict(s) for s in default_servers(configured_count)}
     usage_rows = conn.execute(
         """
         SELECT allocated_server, COALESCE(SUM(cpu_request), 0), COALESCE(SUM(memory_request), 0)
         FROM processed_tasks
-        WHERE allocation_success = 1 AND allocated_server IS NOT NULL
+        WHERE allocation_success = 1
+          AND allocated_server GLOB 'S[0-9]*'
+          AND CAST(SUBSTR(allocated_server, 2) AS INTEGER) BETWEEN 1 AND ?
         GROUP BY allocated_server
         """
-    ).fetchall()
+    , (int(configured_count),)).fetchall()
 
     pool: List[Dict] = []
     seen = set()
@@ -500,8 +888,8 @@ def _build_server_pool_from_db(conn: sqlite3.Connection) -> List[Dict]:
             cpu_cap = float(base["cpu_capacity"])
             mem_cap = float(base["memory_capacity"])
         else:
-            cpu_cap = max(AUTO_SERVER_CPU, cpu_used * 1.1)
-            mem_cap = max(AUTO_SERVER_MEMORY, mem_used * 1.1)
+            # Ignore legacy AUTO_* pools and cap to configured server set.
+            continue
 
         pool.append(
             {
@@ -529,9 +917,19 @@ def rebalance_unassigned_tasks(
     initialize_storage()
     task_cache.clear()
 
+    configured_count = _configured_server_count()
     with _connect_db() as conn:
         total_unassigned = conn.execute(
-            "SELECT COUNT(*) FROM processed_tasks WHERE allocation_success = 0"
+            """
+            SELECT COUNT(*)
+            FROM processed_tasks
+            WHERE NOT (
+                allocation_success = 1
+                AND allocated_server GLOB 'S[0-9]*'
+                AND CAST(SUBSTR(allocated_server, 2) AS INTEGER) BETWEEN 1 AND ?
+            )
+            """,
+            (int(configured_count),),
         ).fetchone()[0]
         if total_unassigned == 0:
             return {
@@ -542,13 +940,7 @@ def rebalance_unassigned_tasks(
                 "partial": False,
             }
 
-        servers = _build_server_pool_from_db(conn)
-        auto_index = (
-            conn.execute(
-                "SELECT COUNT(DISTINCT allocated_server) FROM processed_tasks WHERE allocated_server LIKE 'AUTO_%'"
-            ).fetchone()[0]
-            or 0
-        )
+        servers = _build_server_pool_from_db(conn, configured_count)
         new_servers = 0
         updates: List[tuple] = []
         assigned_now = 0
@@ -563,11 +955,15 @@ def rebalance_unassigned_tasks(
                 """
                 SELECT id, cpu_request, memory_request
                 FROM processed_tasks
-                WHERE allocation_success = 0
+                WHERE NOT (
+                    allocation_success = 1
+                    AND allocated_server GLOB 'S[0-9]*'
+                    AND CAST(SUBSTR(allocated_server, 2) AS INTEGER) BETWEEN 1 AND ?
+                )
                 ORDER BY priority_score DESC
                 LIMIT ?
                 """,
-                (fetch_size,),
+                (int(configured_count), fetch_size),
             ).fetchall()
             if not rows:
                 break
@@ -582,32 +978,10 @@ def rebalance_unassigned_tasks(
                     for s in servers
                     if s["cpu_available"] >= cpu_req and s["memory_available"] >= mem_req
                 ]
-                if not candidates and auto_scale:
-                    auto_index += 1
-                    new_server = {
-                        "server_id": f"AUTO_{auto_index}",
-                        "cpu_capacity": max(AUTO_SERVER_CPU, cpu_req * 50.0),
-                        "memory_capacity": max(AUTO_SERVER_MEMORY, mem_req * 50.0),
-                        "cpu_available": max(AUTO_SERVER_CPU, cpu_req * 50.0),
-                        "memory_available": max(AUTO_SERVER_MEMORY, mem_req * 50.0),
-                    }
-                    servers.append(new_server)
-                    new_servers += 1
-                    candidates = [new_server]
-
                 if not candidates:
                     continue
 
-                # Best-fit choice: minimize post-placement normalized slack.
-                def _fit_key(server: Dict) -> tuple[float, float]:
-                    cpu_cap = float(server["cpu_capacity"])
-                    mem_cap = float(server["memory_capacity"])
-                    cpu_slack = ((float(server["cpu_available"]) - cpu_req) / cpu_cap) if cpu_cap else 1.0
-                    mem_slack = ((float(server["memory_available"]) - mem_req) / mem_cap) if mem_cap else 1.0
-                    fit_score = max(0.0, cpu_slack) + max(0.0, mem_slack)
-                    return (fit_score, _load_ratio(server))
-
-                best = min(candidates, key=_fit_key)
+                best = _pick_random_balanced_server(candidates, cpu_req, mem_req)
                 best["cpu_available"] -= cpu_req
                 best["memory_available"] -= mem_req
                 updates.append((best["server_id"], 1, str(task_id)))
@@ -629,7 +1003,16 @@ def rebalance_unassigned_tasks(
                 break
 
         remaining = conn.execute(
-            "SELECT COUNT(*) FROM processed_tasks WHERE allocation_success = 0"
+            """
+            SELECT COUNT(*)
+            FROM processed_tasks
+            WHERE NOT (
+                allocation_success = 1
+                AND allocated_server GLOB 'S[0-9]*'
+                AND CAST(SUBSTR(allocated_server, 2) AS INTEGER) BETWEEN 1 AND ?
+            )
+            """,
+            (int(configured_count),),
         ).fetchone()[0]
         conn.execute(
             "INSERT INTO pipeline_runs (schedule_type, total_rows, completed_rows, status) VALUES (?, ?, ?, ?)",
@@ -649,25 +1032,46 @@ def rebalance_unassigned_tasks(
 
 def get_server_balance() -> Dict:
     initialize_storage()
+    configured_count = _configured_server_count()
     with _connect_db() as conn:
         rows = conn.execute(
             """
             SELECT
-                COALESCE(allocated_server, 'unassigned') as server_id,
+                CASE
+                    WHEN allocated_server GLOB 'S[0-9]*'
+                         AND CAST(SUBSTR(allocated_server, 2) AS INTEGER) BETWEEN 1 AND ?
+                    THEN allocated_server
+                    ELSE 'unassigned'
+                END as server_id,
                 COUNT(*) as task_count,
                 COALESCE(SUM(cpu_request), 0) as cpu_used,
                 COALESCE(SUM(memory_request), 0) as memory_used,
                 COALESCE(AVG(predicted_server_load), 0) as avg_predicted_load
             FROM processed_tasks
-            GROUP BY COALESCE(allocated_server, 'unassigned')
+            GROUP BY
+                CASE
+                    WHEN allocated_server GLOB 'S[0-9]*'
+                         AND CAST(SUBSTR(allocated_server, 2) AS INTEGER) BETWEEN 1 AND ?
+                    THEN allocated_server
+                    ELSE 'unassigned'
+                END
             ORDER BY task_count DESC
             """
-        ).fetchall()
+        , (int(configured_count), int(configured_count))).fetchall()
         unassigned = conn.execute(
-            "SELECT COUNT(*) FROM processed_tasks WHERE allocation_success = 0"
+            """
+            SELECT COUNT(*)
+            FROM processed_tasks
+            WHERE NOT (
+                allocation_success = 1
+                AND allocated_server GLOB 'S[0-9]*'
+                AND CAST(SUBSTR(allocated_server, 2) AS INTEGER) BETWEEN 1 AND ?
+            )
+            """,
+            (int(configured_count),),
         ).fetchone()[0]
 
-    defaults = {s["server_id"]: s for s in default_servers()}
+    defaults = {s["server_id"]: s for s in default_servers(_configured_server_count())}
     servers = []
     for server_id, task_count, cpu_used, memory_used, avg_load in rows:
         sid = str(server_id)
@@ -680,8 +1084,8 @@ def get_server_balance() -> Dict:
             cpu_cap = 0.0
             mem_cap = 0.0
         else:
-            cpu_cap = max(AUTO_SERVER_CPU, cpu_used * 1.05)
-            mem_cap = max(AUTO_SERVER_MEMORY, memory_used * 1.05)
+            # Keep reporting fixed to provided server set only.
+            continue
 
         cpu_util = (cpu_used / cpu_cap * 100.0) if cpu_cap else 0.0
         mem_util = (memory_used / mem_cap * 100.0) if mem_cap else 0.0

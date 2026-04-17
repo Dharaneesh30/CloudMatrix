@@ -101,7 +101,15 @@ def allocate_for_schedule(
     algo = resolve_schedule_type(schedule_type, len(scheduled_tasks))
 
     if algo == "backtracking" and len(scheduled_tasks) <= 22:
-        return allocate_backtracking(scheduled_tasks, servers)
+        allocations, unassigned, updated_servers = allocate_backtracking(scheduled_tasks, servers)
+        if not unassigned:
+            return allocations, unassigned, updated_servers
+
+        # Ensure all tasks are allocated by falling back to greedy autoscale for unresolved tasks.
+        unassigned_ids = {str(item.get("task_id")) for item in unassigned}
+        fallback_tasks = [task for task in scheduled_tasks if str(task.get("id")) in unassigned_ids]
+        extra_allocations, extra_unassigned, final_servers = allocate_greedy(fallback_tasks, updated_servers)
+        return allocations + extra_allocations, extra_unassigned, final_servers
 
     return allocate_greedy(scheduled_tasks, servers)
 

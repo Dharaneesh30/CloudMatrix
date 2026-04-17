@@ -2,15 +2,11 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-import pandas as pd
-
 try:
     from .graph_scheduler import schedule_with_graph
-    from .hash_table import HashTable
     from .merge_sort import merge_sort_tasks
 except ImportError:
     from core.graph_scheduler import schedule_with_graph
-    from core.hash_table import HashTable
     from core.merge_sort import merge_sort_tasks
 
 
@@ -29,13 +25,19 @@ def _stage_1_store_in_hash_table(tasks: List[Dict]) -> List[Dict]:
     if not tasks:
         return []
 
-    table = HashTable(capacity=max(2048, len(tasks) * 2))
+    # Keep only the latest payload for duplicated ids while preserving order.
+    # This is considerably lighter than materializing a custom hash-table object.
+    latest_by_id: Dict[str, Dict] = {}
+    ordered_ids: List[str] = []
     for idx, task in enumerate(tasks):
         task_id = str(task.get("id") or f"task_{idx}")
-        table.put(task_id, dict(task))
+        payload = dict(task)
+        payload["id"] = task_id
+        if task_id not in latest_by_id:
+            ordered_ids.append(task_id)
+        latest_by_id[task_id] = payload
 
-    # Materialize back to list after O(1)-friendly keyed storage.
-    return [value for _, value in table.items()]
+    return [latest_by_id[task_id] for task_id in ordered_ids]
 
 
 def _stage_2_apply_topological_order(tasks: List[Dict]) -> List[Dict]:
@@ -56,25 +58,4 @@ def _stage_3_prioritize_tasks(tasks: List[Dict]) -> List[Dict]:
     if not tasks:
         return []
 
-    merge_sorted = merge_sort_tasks(tasks, key="priority_score", reverse=True)
-    df = pd.DataFrame(merge_sorted)
-    if df.empty:
-        return merge_sorted
-
-    if "priority_score" not in df.columns:
-        df["priority_score"] = 0.0
-    if "priority" not in df.columns:
-        df["priority"] = 0.0
-
-    # Keep merge-sort order as a deterministic tiebreaker.
-    df["_merge_pos"] = range(len(df))
-    df["priority_score"] = pd.to_numeric(df["priority_score"], errors="coerce").fillna(0.0)
-    df["priority"] = pd.to_numeric(df["priority"], errors="coerce").fillna(0.0)
-
-    df = df.sort_values(
-        by=["priority_score", "priority", "_merge_pos"],
-        ascending=[False, False, True],
-        kind="mergesort",
-    )
-
-    return df.drop(columns=["_merge_pos"], errors="ignore").to_dict(orient="records")
+    return merge_sort_tasks(tasks, key="priority_score", reverse=True)

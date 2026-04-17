@@ -16,6 +16,18 @@ CloudMatrix AI is a full-stack scheduling and server-allocation system for CSV t
 
 ## Local Run
 
+### One Command (Frontend + Backend)
+
+From the repository root:
+
+```bash
+bash ./run-dev.sh
+```
+
+This starts:
+- Backend at `http://127.0.0.1:8000`
+- Frontend at `http://localhost:5173`
+
 ### 1) Backend
 
 ```powershell
@@ -58,9 +70,26 @@ python -m compileall backend
 - `GET /health`
 - `POST /upload-dataset` (multipart file + `unused_servers`)
 - `GET /status`
+- `GET /concepts-coverage` (CAT concept mapping + time/space complexity summary)
 - `GET /tasks?page=&limit=`
 - `GET /task/{task_id}`
 - `POST /schedule/{schedule_type}`
 - `GET /metrics`
 - `GET /server-balance`
 - `POST /rebalance-unassigned`
+
+## CAT Concept Coverage
+
+CloudMatrix includes explicit implementations and usage of:
+- Divide and Conquer
+- Greedy
+- Dynamic Programming
+- Hashing
+- Backtracking
+- Branch and Bound
+- Tree basics (hierarchy + BFS + BST operations)
+
+See:
+- `backend/docs/ALGORITHM_CONCEPT_COVERAGE.md`
+- API: `GET /concepts-coverage`
+- Frontend: `Step 6: Concepts`

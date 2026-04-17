@@ -1,15 +1,24 @@
 import axios from "axios";
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
 const api = axios.create({
-  baseURL: "http://localhost:8000",
+  baseURL: API_BASE_URL,
   timeout: 120000,
 });
 
-export const uploadDataset = async (file, unusedServers = 3) => {
+export const uploadDataset = async (file, unusedServers = 3, onProgress) => {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("unused_servers", String(unusedServers || 3));
-  const res = await api.post("/upload-dataset", formData);
+  const res = await api.post("/upload-dataset", formData, {
+    timeout: 30 * 60 * 1000,
+    onUploadProgress: (event) => {
+      if (!onProgress || !event || !event.total) return;
+      const percent = Math.max(0, Math.min(100, Math.round((Number(event.loaded || 0) / Number(event.total || 1)) * 100)));
+      onProgress(percent);
+    },
+  });
   return res.data;
 };
 
@@ -25,6 +34,8 @@ export const fetchTasks = async (page = 1, limit = 50) =>
   (await api.get("/tasks", { params: { page, limit } })).data;
 export const fetchUnassignedTasks = async (page = 1, limit = 50, includeTotal = false) =>
   (await api.get("/unassigned-tasks", { params: { page, limit, include_total: includeTotal } })).data;
+export const fetchAssignedTasks = async (page = 1, limit = 50, includeTotal = false) =>
+  (await api.get("/assigned-tasks", { params: { page, limit, include_total: includeTotal } })).data;
 export const fetchTaskById = async (taskId) => (await api.get(`/task/${taskId}`)).data;
 export const runSchedule = async (type, page = 1, limit = 50) =>
   (

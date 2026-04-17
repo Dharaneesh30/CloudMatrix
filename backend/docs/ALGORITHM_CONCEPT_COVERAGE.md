@@ -1,87 +1,38 @@
 # CloudMatrix Algorithm Concept Coverage
 
-This project keeps the Scheduling page fixed (SJF in UI), while implementing and using all required algorithmic concepts in backend flow.
+## CAT Internal Marks Evaluation (Total: 60)
 
-## 1) Divide and Conquer
-- Implementation:
-  - `backend/core/merge_sort.py`
-- Technique used:
-  - Recursive stable merge sort (`split -> solve halves -> merge`).
-- Where used:
-  - `backend/core/stage_preprocessing.py` (Stage 3 prioritization).
-  - `backend/core/scheduling_engine.py` (greedy/backtracking ordering).
-- Why:
-  - Deterministic, stable priority ordering for large task lists.
+1. 2026-03-18: Divide and Conquer + Greedy Method Implementation (20 marks)
+2. 2026-04-01: Dynamic Programming (10 marks)
+3. 2026-04-10: Hashing + Backtracking / Branch and Bound + Tree Algorithms (30 marks)
 
-## 2) Greedy Method
-- Implementation:
-  - `backend/core/greedy_allocator.py`
-- Technique used:
-  - Best-fit least-loaded server selection among feasible servers.
-- Where used:
-  - `backend/core/scheduling_engine.py` as default allocator and large-input fallback.
-  - `backend/core/pipeline.py` via `allocate_for_schedule(...)`.
-- Why:
-  - Fast near-optimal allocation for throughput and load balancing.
+## Concept-to-Implementation Map
 
-## 3) Dynamic Programming
-- Implementation:
-  - `backend/core/dp_scheduler.py`
-- Technique used:
-  - Knapsack-style DP table over weighted CPU budget.
-  - Reconstruct selected high-value subset, append tail by greedy order.
-- Where used:
-  - `backend/core/scheduling_engine.py` when schedule type resolves to `dp`.
-- Why:
-  - Better value-aware ordering when resource constraints matter.
+| Concept | Algorithms Used | Time Complexity | Space Complexity | Primary Modules |
+|---|---|---|---|---|
+| Divide and Conquer | Stable Merge Sort | O(n log n) | O(n) | `backend/core/merge_sort.py`, `backend/core/stage_preprocessing.py` |
+| Greedy Method | Best-Fit Decreasing Resource Allocation | O(T log T + T*S) | O(T + S) | `backend/core/greedy_allocator.py`, `backend/core/scheduling_engine.py` |
+| Dynamic Programming | Knapsack-style DP Scheduler | O(N*C) | O(N*C) | `backend/core/dp_scheduler.py` |
+| Hashing | Chained Hash Table + Task Cache | O(1) avg, O(n) worst | O(n) | `backend/core/hash_table.py`, `backend/core/task_cache.py` |
+| Backtracking | Exact bounded DFS allocation | O(S^T) worst | O(T) | `backend/core/backtracking_allocator.py` |
+| Branch and Bound | Priority-queue bounded search with pruning | Exponential worst-case (bounded expansions) | O(K) | `backend/core/branch_bound.py` |
+| Tree Algorithms | Server hierarchy tree + BFS, Priority BST | O(V+E), O(h) insert/search, O(n) traversal | O(V), O(n) | `backend/core/tree_structure.py`, `backend/core/pipeline.py` |
 
-## 4) Hashing
-- Implementation:
-  - `backend/core/hash_table.py` (chaining + resize)
-  - `backend/core/task_cache.py` (thread-safe cache wrapper)
-- Technique used:
-  - O(1)-average insert/get/delete on task id keys.
-- Where used:
-  - `backend/core/stage_preprocessing.py` Stage 1.
-  - `backend/api/routes_fastapi.py` task read hot path (`/task/{task_id}`).
-- Why:
-  - Low-latency lookup and reduced repeated DB reads.
+Legend:
+- `T` = number of tasks
+- `S` = number of servers
+- `N` = DP candidate tasks
+- `C` = DP capacity units
+- `K` = active branch-and-bound frontier
+- `V`, `E` = tree nodes and edges
+- `h` = BST height
 
-## 5) Backtracking / Branch and Bound
-- Backtracking implementation:
-  - `backend/core/backtracking_allocator.py`
-- Technique used:
-  - DFS exact search with pruning for small batches (`<= 22`).
-- Where used:
-  - `backend/core/scheduling_engine.py` for small workload allocation.
-- Why:
-  - Exact feasible assignment on small input sizes.
+## Efficient Runtime Strategy
 
-- Branch and Bound implementation:
-  - `backend/core/branch_bound.py`
-- Technique used:
-  - Priority-queue search with lower-bound pruning and expansion caps.
-- Where used:
-  - `backend/core/scheduling_engine.py` for medium input ordering.
-- Why:
-  - Better-quality ordering than plain greedy while controlling runtime.
+`backend/core/scheduling_engine.py` uses adaptive selection for `fast` / `hybrid`:
 
-## 6) Tree Concepts
-- Implementation:
-  - `backend/core/tree_structure.py`
-- Techniques used:
-  - Server hierarchy tree construction.
-  - Breadth-first traversal (level order).
-  - Task priority BST insert/search/inorder.
-- Where used:
-  - `backend/core/pipeline.py` in `get_server_balance()` response (`server_tree`).
-- Why:
-  - Structured representation for server topology and educational tree operations.
+1. Small datasets: `backtracking` for exactness
+2. Medium datasets: `branch_bound` for quality with bounded search
+3. Large datasets: `greedy` for throughput and scalability
 
-## 7) Runtime Algorithm Resolution
-- `backend/core/scheduling_engine.py` maps `fast` / `hybrid` into:
-  - small -> `backtracking`
-  - medium -> `branch_bound`
-  - large -> `greedy`
-
-This keeps UI simple/fixed while still demonstrating multiple advanced algorithmic techniques in backend execution.
+This ensures all required concepts are implemented and demonstrable while maintaining practical runtime and memory behavior.

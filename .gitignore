@@ -10,3 +10,4 @@ backend/venv/
 *.pyc
 backend_run_out.log
 backend_run_err.log
+frontend/.vite/

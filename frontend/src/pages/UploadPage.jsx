@@ -9,8 +9,9 @@ export default function UploadPage() {
   const [file, setFile] = useState(null);
   const [unusedServers, setUnusedServers] = useState(3);
   const [busy, setBusy] = useState(false);
+  const [uploadPct, setUploadPct] = useState(0);
   const [message, setMessage] = useState("");
-  const { status, notifyDataChanged } = usePipeline();
+  const { status, notifyDataChanged, setStatus } = usePipeline();
   const navigate = useNavigate();
 
   const readyText = useMemo(() => {
@@ -21,11 +22,27 @@ export default function UploadPage() {
   const onUpload = async () => {
     if (!file) return;
     setBusy(true);
+    setUploadPct(0);
     setMessage("");
 
     try {
       await pingHealth();
-      await uploadDataset(file, unusedServers);
+      if (typeof window !== "undefined") {
+        window.sessionStorage.removeItem("cm_has_run");
+        window.sessionStorage.removeItem("cm_results_cache");
+        window.sessionStorage.removeItem("cm_balance_cache");
+        window.sessionStorage.removeItem("cm_scheduling_cache");
+      }
+      setStatus({
+        status: "queued",
+        progress: 0,
+        rows_processed: 0,
+        total_rows: 0,
+        message: `Uploading ${file.name} with ${unusedServers} servers`,
+        error: null,
+        server_count: Number(unusedServers),
+      });
+      await uploadDataset(file, unusedServers, (pct) => setUploadPct(pct));
       notifyDataChanged();
       setMessage("Upload successful. Automatic pipeline started. Moving to dashboard...");
       setTimeout(() => navigate("/dashboard"), 500);
@@ -46,7 +63,7 @@ export default function UploadPage() {
 
         <div className="mt-5 space-y-3">
           <div>
-            <label className="mb-1 block text-sm font-medium text-ink/70">Unused Servers (start capacity)</label>
+            <label className="mb-1 block text-sm font-medium text-ink/70">Number Of Servers</label>
             <input
               type="number"
               min={1}
@@ -82,11 +99,16 @@ export default function UploadPage() {
             disabled={busy || !file}
             className="btn-primary w-full"
           >
-            {busy ? "Uploading..." : "Upload Dataset"}
+            {busy ? `Uploading... ${uploadPct}%` : "Upload Dataset"}
           </button>
         </div>
 
         <p className="mt-3 text-sm text-ink/65">{readyText}</p>
+        {busy && (
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-ink/10">
+            <div className="h-full rounded-full bg-mint transition-all duration-150" style={{ width: `${uploadPct}%` }} />
+          </div>
+        )}
         {file && <span className="chip mt-2">CSV Ready</span>}
         {message && <p className="mt-2 text-sm font-medium text-ink">{message}</p>}
       </div>

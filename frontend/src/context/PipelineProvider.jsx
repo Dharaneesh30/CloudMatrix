@@ -14,6 +14,7 @@ export function PipelineProvider({ children }) {
   });
   const [refreshToken, setRefreshToken] = useState(0);
   const [dataVersion, setDataVersion] = useState(0);
+  const [backendReachable, setBackendReachable] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -23,10 +24,13 @@ export function PipelineProvider({ children }) {
         const next = await fetchStatus();
         if (active) {
           setStatus(next);
+          setBackendReachable(true);
           setRefreshToken(Date.now());
         }
       } catch {
-        // keep previous status if backend is temporarily unreachable
+        if (active) {
+          setBackendReachable(false);
+        }
       }
     };
 
@@ -43,21 +47,27 @@ export function PipelineProvider({ children }) {
   }, []);
 
   const computedHasRun = Number(status?.rows_processed || 0) > 0 || Number(status?.total_rows || 0) > 0;
+  const phase = String(status?.status || "idle");
+  const isProcessingPhase = phase === "queued" || phase === "processing";
 
   useEffect(() => {
-    if (!computedHasRun) return;
     if (typeof window !== "undefined") {
-      window.sessionStorage.setItem("cm_has_run", "1");
+      if (computedHasRun) {
+        window.sessionStorage.setItem("cm_has_run", "1");
+      } else if (!isProcessingPhase && phase === "idle") {
+        // Prevent stale cache from unlocking monitor/results without a real run.
+        window.sessionStorage.removeItem("cm_has_run");
+      }
     }
-  }, [computedHasRun]);
+  }, [computedHasRun, isProcessingPhase, phase]);
 
   const value = useMemo(() => {
-    const phase = String(status?.status || "idle");
-    const isProcessing = phase === "queued" || phase === "processing";
-    const isCompleted = phase === "completed";
+    const phaseNow = String(status?.status || "idle");
+    const isProcessing = phaseNow === "queued" || phaseNow === "processing";
+    const isCompleted = phaseNow === "completed";
     const stickyHasRun =
       typeof window !== "undefined" && window.sessionStorage.getItem("cm_has_run") === "1";
-    const hasRun = computedHasRun || stickyHasRun;
+    const hasRun = computedHasRun || (stickyHasRun && phaseNow !== "idle");
 
     const notifyDataChanged = () => {
       setDataVersion((v) => v + 1);
@@ -68,12 +78,13 @@ export function PipelineProvider({ children }) {
       setStatus,
       refreshToken,
       dataVersion,
+      backendReachable,
       notifyDataChanged,
       isProcessing,
       isCompleted,
       hasRun,
     };
-  }, [status, refreshToken, dataVersion, computedHasRun]);
+  }, [status, refreshToken, dataVersion, computedHasRun, backendReachable]);
 
   return <PipelineContext.Provider value={value}>{children}</PipelineContext.Provider>;
 }

@@ -15,8 +15,8 @@ function TaskSorting() {
       setError("");
 
       try {
-        const res = await api.get("/sort-tasks", {
-          params: { page, page_size: pageSize },
+        const res = await api.get("/tasks", {
+          params: { page, limit: pageSize },
         });
         setTasks(res.data.tasks || []);
         setTotal(res.data.total || 0);

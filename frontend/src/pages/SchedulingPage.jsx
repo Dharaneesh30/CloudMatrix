@@ -14,29 +14,41 @@ export default function SchedulingPage() {
     cached = null;
   }
 
-  const [algorithm] = useState("sjf");
+  const [algorithm] = useState("fast");
   const [result, setResult] = useState(cached?.result || { page: { tasks: [] }, result: null });
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(cached?.error || "");
-  const { isProcessing, isCompleted, hasRun, dataVersion, notifyDataChanged } = usePipeline();
+  const [error, setError] = useState(
+    (cached?.result?.page?.tasks || []).length > 0 ? "" : (cached?.error || "")
+  );
+  const { isProcessing, isCompleted, hasRun, dataVersion, notifyDataChanged, backendReachable } = usePipeline();
 
   const locked = isProcessing || !hasRun;
 
   const onRun = async () => {
+    if (!backendReachable) {
+      setError("Backend is offline. Start backend on :8000 and try again.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
       const res = await runSchedule(algorithm, 1, 50);
       setResult(res);
       if (typeof window !== "undefined") {
-        window.sessionStorage.setItem("cm_scheduling_cache", JSON.stringify({ result: res, error: "" }));
+        window.sessionStorage.setItem(
+          "cm_scheduling_cache",
+          JSON.stringify({ result: res, error: "", version: dataVersion + 1, savedAt: Date.now() })
+        );
       }
       notifyDataChanged();
     } catch (err) {
       const message = err?.response?.data?.detail || "Scheduling update failed";
       setError(message);
       if (typeof window !== "undefined") {
-        window.sessionStorage.setItem("cm_scheduling_cache", JSON.stringify({ result, error: message }));
+        window.sessionStorage.setItem(
+          "cm_scheduling_cache",
+          JSON.stringify({ result, error: message, version: dataVersion, savedAt: Date.now() })
+        );
       }
     } finally {
       setLoading(false);
@@ -45,30 +57,41 @@ export default function SchedulingPage() {
 
   useEffect(() => {
     if (!hasRun) return;
+    const cacheVersion = Number(cached?.version ?? -1);
+    const cacheFresh = Number(cached?.savedAt || 0) > 0 && Date.now() - Number(cached.savedAt) < 30000;
+    if (cacheVersion === Number(dataVersion) && cacheFresh && (cached?.result?.page?.tasks || []).length > 0) {
+      // Avoid showing stale cached error when valid preview data is already present.
+      setError("");
+      return;
+    }
     fetchTasks(1, 50)
-      .then((res) =>
+      .then((res) => {
+        setError("");
         setResult((prev) => {
           const next = { ...prev, page: res };
           if (typeof window !== "undefined") {
-            window.sessionStorage.setItem("cm_scheduling_cache", JSON.stringify({ result: next, error }));
+            window.sessionStorage.setItem(
+              "cm_scheduling_cache",
+              JSON.stringify({ result: next, error: "", version: dataVersion, savedAt: Date.now() })
+            );
           }
           return next;
-        })
-      )
+        });
+      })
       .catch(() => {
         // keep existing result on transient errors
       });
-  }, [hasRun, dataVersion, error]);
+  }, [hasRun, dataVersion, error, cached?.savedAt, cached?.version]);
 
   return (
     <section className="space-y-4">
       <div className="glass-card p-5 md:p-6">
         <h2 className="font-display text-xl font-semibold">Step 3: Scheduling Strategy</h2>
         <p className="mt-1 text-sm text-ink/65">
-          This page applies a single scheduling concept: Shortest Job First (SJF).
+          This page applies the best available scheduler for your current dataset size.
         </p>
         <p className="mt-1 text-sm text-ink/55">
-          Tasks with shorter execution time are scheduled first for better throughput.
+          Small datasets use deeper optimization; large datasets switch to faster ranking for quick responses.
         </p>
 
         {locked && (
@@ -87,7 +110,7 @@ export default function SchedulingPage() {
 
         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
           <div className="w-full rounded-xl border border-ink/15 bg-white/85 px-3 py-2 text-sm font-medium sm:max-w-xs">
-            Scheduling: SJF
+            Scheduling: Fast Auto Mode
           </div>
 
           <button
@@ -100,6 +123,11 @@ export default function SchedulingPage() {
         </div>
 
         {error && <p className="mt-3 text-sm font-medium text-red-600">{error}</p>}
+        {!backendReachable && (
+          <p className="mt-2 text-sm font-medium text-red-600">
+            Backend is unreachable. Scheduling cannot be updated right now.
+          </p>
+        )}
         {result?.result && (
           <p className="mt-3 text-sm text-ink/75">
             Rescheduled: <strong>{result.result.rescheduled}</strong> | Unassigned: <strong>{result.result.unassigned}</strong>

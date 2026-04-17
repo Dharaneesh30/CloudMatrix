@@ -14,7 +14,7 @@ formData.append("file",file)
 
 await api.post("/upload-dataset",formData)
 
-navigate("/add-tasks")
+navigate("/dashboard")
 
 }
 

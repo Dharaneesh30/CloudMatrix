@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import TasksTable from "../components/TasksTable";
 import { usePipeline } from "../context/usePipeline";
@@ -14,9 +14,15 @@ function SummaryCard({ title, value }) {
 }
 
 export default function ResultsPage() {
-  const cached =
-    typeof window !== "undefined" ? window.sessionStorage.getItem("cm_results_cache") : null;
-  const parsedCache = cached ? JSON.parse(cached) : null;
+  const parsedCache = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const cached = window.sessionStorage.getItem("cm_results_cache");
+    try {
+      return cached ? JSON.parse(cached) : null;
+    } catch {
+      return null;
+    }
+  }, []);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(50);
   const [data, setData] = useState(parsedCache?.data || { tasks: [], total: 0, page: 1, limit: 50 });
@@ -25,53 +31,126 @@ export default function ResultsPage() {
   const [searchId, setSearchId] = useState("");
   const [searchResult, setSearchResult] = useState(null);
   const [error, setError] = useState("");
-  const { status, isProcessing, hasRun, dataVersion } = usePipeline();
+  const [warning, setWarning] = useState("");
+  const { status, isProcessing, hasRun, dataVersion, backendReachable } = usePipeline();
+  const dataRef = useRef(data);
+  const metricsRef = useRef(metrics);
+  const balanceRef = useRef(serverBalance);
 
-  const load = useCallback(async (targetPage = page, targetLimit = limit) => {
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    metricsRef.current = metrics;
+  }, [metrics]);
+
+  useEffect(() => {
+    balanceRef.current = serverBalance;
+  }, [serverBalance]);
+
+  const load = useCallback(async (targetPage, targetLimit) => {
+    if (!backendReachable) {
+      setError("Backend is offline. Start backend on :8000 and click Refresh.");
+      return;
+    }
     try {
       setError("");
-      const [tasksRes, metricsRes, balanceRes] = await Promise.all([
+      setWarning("");
+      const [tasksRes, metricsRes, balanceRes] = await Promise.allSettled([
         fetchTasks(targetPage, targetLimit),
         fetchMetrics("lite"),
         fetchServerBalance(),
       ]);
-      setData(tasksRes);
-      setMetrics(metricsRes);
-      setServerBalance(balanceRes);
+
+      let successCount = 0;
+      let nextData = data;
+      let nextMetrics = metrics;
+      let nextServerBalance = serverBalance;
+
+      if (tasksRes.status === "fulfilled") {
+        nextData = tasksRes.value;
+        setData(tasksRes.value);
+        successCount += 1;
+      }
+      if (metricsRes.status === "fulfilled") {
+        nextMetrics = metricsRes.value;
+        setMetrics(metricsRes.value);
+        successCount += 1;
+      }
+      if (balanceRes.status === "fulfilled") {
+        nextServerBalance = balanceRes.value;
+        setServerBalance(balanceRes.value);
+        successCount += 1;
+      }
+
+      if (successCount === 0) {
+        throw new Error("all_results_endpoints_failed");
+      }
+
+      if (successCount < 3) {
+        setWarning("Some live results are temporarily unavailable. Showing latest available data.");
+      }
+
       if (typeof window !== "undefined") {
         window.sessionStorage.setItem(
           "cm_results_cache",
           JSON.stringify({
-            data: tasksRes,
-            metrics: metricsRes,
-            serverBalance: balanceRes,
+            data: nextData,
+            metrics: nextMetrics,
+            serverBalance: nextServerBalance,
+            version: dataVersion,
+            savedAt: Date.now(),
           })
         );
       }
     } catch (err) {
-      setError(err?.response?.data?.detail || "Failed to refresh results (showing last loaded data)");
+      const hasFallback =
+        Number(dataRef.current?.total || 0) > 0 ||
+        Number(metricsRef.current?.total_tasks || 0) > 0 ||
+        balanceRef.current !== null;
+      if (hasFallback) {
+        setWarning("Live refresh temporarily failed. Showing last loaded data.");
+        setError("");
+      } else {
+        setError(err?.response?.data?.detail || "Failed to refresh results");
+      }
     }
-  }, [page, limit]);
+  }, [dataVersion, backendReachable]);
+
+  const onRefresh = async () => {
+    await load(page, limit);
+  };
 
   useEffect(() => {
     if (!hasRun) return;
+    const cacheVersion = Number(parsedCache?.version ?? -1);
+    const cacheFresh =
+      Number(parsedCache?.savedAt || 0) > 0 && Date.now() - Number(parsedCache.savedAt) < 30000;
+    if (cacheVersion === Number(dataVersion) && cacheFresh && (parsedCache?.data?.tasks || []).length > 0) {
+      return;
+    }
     const kickoff = setTimeout(() => {
       void load(page, limit);
     }, 0);
     const timer = setInterval(() => {
       void load(page, limit);
-    }, isProcessing ? 4000 : 12000);
+    }, isProcessing ? 6000 : 20000);
     return () => {
       clearTimeout(kickoff);
       clearInterval(timer);
     };
-  }, [page, limit, hasRun, dataVersion, load, isProcessing]);
+  }, [page, limit, hasRun, dataVersion, load, isProcessing, parsedCache]);
 
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / limit));
   const unassigned = Number(serverBalance?.remaining_unassigned || 0);
   const assigned = Math.max(0, Number(data.total || metrics?.total_tasks || 0) - unassigned);
 
   const onSearch = async () => {
+    if (!backendReachable) {
+      setError("Backend is offline. Search is unavailable.");
+      return;
+    }
     if (!searchId.trim()) {
       setSearchResult(null);
       return;
@@ -117,8 +196,17 @@ export default function ResultsPage() {
             <button onClick={onSearch} className="btn-primary px-4">
               Search
             </button>
+            <button onClick={onRefresh} disabled={!backendReachable} className="btn-secondary px-4">
+              Refresh
+            </button>
           </div>
         </div>
+
+        {!backendReachable && (
+          <p className="mt-3 text-sm font-medium text-red-600">
+            Backend is unreachable. Results cannot update until API server is running.
+          </p>
+        )}
 
         {searchResult && (
           <div className="mt-4 rounded-xl border border-mint/35 bg-mint/10 p-3 text-sm">
@@ -129,6 +217,7 @@ export default function ResultsPage() {
         )}
 
         {error && <p className="mt-3 text-sm font-medium text-red-600">{error}</p>}
+        {warning && <p className="mt-3 text-sm font-medium text-amber-700">{warning}</p>}
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <SummaryCard title="Pipeline Status" value={String(status?.status || "idle")} />

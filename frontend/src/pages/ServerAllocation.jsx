@@ -15,11 +15,12 @@ function ServerAllocation() {
       setError("");
 
       try {
-        const res = await api.get("/allocate-servers", {
-          params: { page, page_size: pageSize },
-        });
-        setAllocations(res.data.allocations || []);
-        setTotal(res.data.total || 0);
+        const res = await api.get("/server-balance");
+        const servers = res.data.servers || [];
+        setTotal(servers.length);
+        const start = (page - 1) * pageSize;
+        const end = start + pageSize;
+        setAllocations(servers.slice(start, end));
       } catch (err) {
         setError(err.response?.data?.error || "Failed to load allocation.");
       } finally {
@@ -45,7 +46,7 @@ function ServerAllocation() {
         <div>
           <div className="panel-row">
             <p className="meta">
-              Showing {currentStart}-{currentEnd} of {total} allocations (page {page}/{totalPages})
+              Showing {currentStart}-{currentEnd} of {total} servers (page {page}/{totalPages})
             </p>
             <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>
               Previous
@@ -58,7 +59,9 @@ function ServerAllocation() {
           <ul className="alloc-list">
             {allocations.map((s, i) => (
               <li key={i}>
-                Server <strong>{s.server}</strong> {"->"} Task <strong>{s.task_id ?? s.task ?? "unknown"}</strong>
+                Server <strong>{s.server_id}</strong> | Tasks <strong>{s.task_count}</strong> | CPU{" "}
+                <strong>{Number(s.cpu_utilization_pct || 0).toFixed(2)}%</strong> | Memory{" "}
+                <strong>{Number(s.memory_utilization_pct || 0).toFixed(2)}%</strong>
               </li>
             ))}
           </ul>

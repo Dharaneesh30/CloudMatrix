@@ -11,7 +11,7 @@ const ResultsPage = lazy(() => import("./pages/ResultsPage"));
 const LoadBalancePage = lazy(() => import("./pages/LoadBalancePage"));
 
 function AppShell() {
-  const { hasRun, isCompleted, isProcessing, status } = usePipeline();
+  const { hasRun, isCompleted, isProcessing, status, backendReachable } = usePipeline();
   const flowLocked = isProcessing;
 
   const steps = [
@@ -34,11 +34,17 @@ function AppShell() {
             </div>
 
             <div className="rounded-xl border border-white/60 bg-white/82 px-3 py-2 text-sm">
-              <span className="font-semibold capitalize">{status?.status || "idle"}</span>
+              <span className="font-semibold capitalize">{backendReachable ? (status?.status || "idle") : "offline"}</span>
               <span className="mx-2 text-ink/40">|</span>
-              <span>{Number(status?.progress || 0)}%</span>
+              <span>{backendReachable ? `${Number(status?.progress || 0)}%` : "backend unavailable"}</span>
             </div>
           </div>
+
+          {!backendReachable && (
+            <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+              Backend is not reachable on API server. Start/restart backend and click Refresh on page.
+            </p>
+          )}
 
           <nav className="mt-5 flex flex-wrap gap-2">
             {steps.map((step) => {

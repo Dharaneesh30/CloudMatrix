@@ -50,12 +50,21 @@ class HashTable:
         if self._needs_resize():
             self._resize()
 
+    def insert(self, task: dict) -> None:
+        """Insert task payload keyed by task id."""
+        task_id = str(task.get("id", ""))
+        self.put(task_id, dict(task))
+
     def get(self, key: str, default: Optional[Any] = None) -> Any:
         index = self._index(key)
         for node in self.buckets[index]:
             if node.key == key:
                 return node.value
         return default
+
+    def search(self, task_id: str) -> Optional[Any]:
+        """Search task by id."""
+        return self.get(str(task_id))
 
     def delete(self, key: str) -> bool:
         index = self._index(key)

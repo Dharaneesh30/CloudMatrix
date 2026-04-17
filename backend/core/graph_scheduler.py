@@ -4,6 +4,16 @@ from collections import defaultdict, deque
 from typing import Dict, List
 
 
+def topological_sort(tasks: List[Dict]) -> List[Dict]:
+    """Alias API: dependency-based topological order."""
+    return schedule_with_graph(tasks)
+
+
+def get_execution_order(tasks: List[Dict]) -> List[Dict]:
+    """Alias used by demo runner."""
+    return schedule_with_graph(tasks)
+
+
 def schedule_with_graph(tasks: List[Dict]) -> List[Dict]:
     """
     Topological scheduling.
